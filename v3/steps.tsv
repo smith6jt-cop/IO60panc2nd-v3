@@ -1,0 +1,38 @@
+# steps.tsv -- the step table run_v3.sh executes (one row per step, in chain order; TAB-separated).
+# Edit this file, not run_v3.sh, to plug in a new script, change a heap or add a step.
+#
+#  step           id used in provenance/<tag>/<step>.json, logs and --steps/--force
+#  passes         I = islets, C = cells, J = context + exports; X/R = reviewed-islet export/import for
+#                 HiPerGator's pass J. A step may belong to several passes (preflight: I,C).
+#  script         path relative to the project repo root. 'a|b' = candidates: --script-set auto (default)
+#                 takes the first that exists, 'orig' the last, 'v3' requires the first.
+#  args           script arguments, '|'-separated; placeholders {OUT} {TMP} {TAG} {PROJ} {STEP}; '-' = none
+#  save           self-saves (the script saves itself: script 0) | footer-saves (the generated footer
+#                 saves only if the postcondition passed) | never (read-only; the footer checks the
+#                 .qpdata did not change)
+#  lane           gpu | cpu | light -- which slot pool the step waits for (--lanes-gpu/-cpu/-light)
+#  heap_gb        JVM cap (-Xmx); also what the step reserves from the --mem-budget
+#  threads        java.util.concurrent.ForkJoinPool.common.parallelism (parallelStream users)
+#  timeout_min    wall-clock limit; a killed step writes no sentinel and counts as failed
+#  after          steps that must be done AND older; re-running one of them makes this step stale.
+#                 'x?' = only if x has run on this image (R_import exists only on HiPerGator).
+#  needs          steps that must be done, in any order (re-running them does not invalidate this)
+#  overrides      NAME=VALUE;... rewrites the declaration '<type> NAME = ...' in the script copy
+#                 (must match exactly once, or the step is refused)
+#  postcondition  footer check: name(key=v1|v2;key2=v) -- see footer_template.groovy
+#  post           v3ctl.py post hook run after a passing step: cells_parquet | context_parquet | -
+step	passes	script	args	save	lane	heap_gb	threads	timeout_min	after	needs	overrides	postcondition	post	description
+preflight	I,C	scripts/v3/preflight.groovy	-	footer-saves	light	64	8	60	-	-	-	preflight	-	channels, pixel size, one Tissue, pLN inside Tissue; drops stale Gal3Norm
+1	I	scripts/v3/qupath/1_panc_objects_v3.groovy|scripts/1_panc_objects.groovy	-	footer-saves	light	96	16	240	-	preflight	-	islets_present(classes=Islet|EndocrineCluster|EndocrineSingle)	-	islet objects (v3 method when its script exists)
+4	I	scripts/v3/qupath/4_islet_expander_v3.groovy|scripts/4_islet_expander.groovy	-	footer-saves	light	64	16	120	1	-	-	islet_bands(classes=Islet)	-	20 um IsletExpanded bands + 'Islet: UID'
+0	C	scripts/0_cell_detection_panc.groovy	-	self-saves	gpu	96	12	480	-	preflight	-	detections_present	-	InstanSeg over the Tissue annotation (GPU)
+2	C	scripts/2_fast_cell_measurements.groovy	-	footer-saves	cpu	160	24	1440	0	-	N_THREADS=24	cells_measured(measurement=Cell: DAPI: Mean)	-	all shape + intensity measurements
+C_cells	C	scripts/v3/exports.groovy	cells|{TMP}/{TAG}.cells.tsv	never	cpu	128	8	360	2	-	-	v3_result	cells_parquet	every detection measurement -> cells/<tag>.parquet
+C_geojson	C	scripts/v3/qupath/export_cells_geojson_v3.groovy	{OUT}/cell_geojson/{TAG}.geojson	never	cpu	96	8	240	0	-	-	v3_result	-	cell polygons -> cell_geojson/<tag>.geojson
+3	J	scripts/v3/qupath/3_signed_distance_v3.groovy|scripts/3_signed_distance.groovy	-	footer-saves	cpu	128	24	240	0,1,R_import?	-	-	signed_distance(classes=Islet|EndocrineCluster|EndocrineSingle|Artifact|pLN|Tissue)	-	signed distance to each annotation class
+8	J	scripts/v3/qupath/8_hierarchy_parenting_v3.groovy|scripts/8_hierarchy_parenting.groovy	-	footer-saves	cpu	128	16	240	0,1,4,R_import?	-	-	parenting(forbid=Other: Gal3Norm)	-	parent each cell to its annotation
+J_context	J	scripts/v3/exports.groovy	context|{TMP}/{TAG}.context.tsv	never	cpu	128	8	240	3,8	-	-	v3_result	context_parquet	Object ID, Parent, centroids, distances -> context/<tag>.parquet
+J_annotations	J	scripts/v3/exports.groovy	annotations|{OUT}/annotations/{TAG}.tsv	never	light	96	8	120	1,4,8,R_import?	-	-	v3_result	-	annotation measurements -> annotations/<tag>.tsv
+J_islets	J	scripts/v3/exports.groovy	islets|{OUT}/islets/{TAG}.geojson	never	light	96	8	120	1,4,R_import?	-	-	v3_result	-	annotations except Tissue/pLN -> islets/<tag>.geojson
+R_export	X	scripts/v3/exports.groovy	islets|{OUT}/reviewed_islets/{TAG}.geojson	never	light	96	8	120	1,4	-	-	v3_result	-	after gate 1: reviewed islets for HiPerGator
+R_import	R	scripts/v3/import_reviewed_islets.groovy	{OUT}/reviewed_islets/{TAG}.geojson	footer-saves	light	96	8	60	-	-	-	v3_result	-	HiPerGator: replace islets with the reviewed set

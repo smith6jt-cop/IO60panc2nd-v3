@@ -25,9 +25,11 @@ die() {
 # Senior layer rebuild. Headless QuPath runs that this helper starts itself pass SKIP_BUSY_CHECK=1.
 assert_project_idle() {
     [[ "${SKIP_BUSY_CHECK:-0}" == 1 ]] && return 0
+    # Match on the process name (comm), not the whole command line: a shell that merely mentions
+    # QuPath or refine.py in its arguments (another session's bash -c wrapper, a grep) is not busy.
     local busy
-    busy=$(ps -eo pid,args | grep -E 'qupath\.QuPath|/QuPath/bin/QuPath|build_layers|make rebuild|refine\.py' \
-           | grep -v grep || true)
+    busy=$(ps -eo pid=,comm=,args= | awk '$2 == "QuPath" || ($2 == "java" && /qupath\.QuPath/) ||
+            ($2 ~ /^(python[0-9.]*|make)$/ && /build_layers|make rebuild|refine\.py/)' || true)
     [[ -z "$busy" ]] || die "project busy; close QuPath / wait for the rebuild first:
-$busy"
+$(cut -c1-200 <<< "$busy")"
 }
