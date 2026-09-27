@@ -27,12 +27,13 @@ import islet_benchmark_score as ibs
 
 def test_mean_caliper_diameter_rectangle():
     rect = box(0, 0, 20, 10)  # 20 x 10 pixel rectangle
-    assert ibs.mean_caliper_diameter_um(rect, pixel_size_um=1.0) == pytest.approx(15.0)
+    # min Feret 10, max Feret = the diagonal sqrt(500): QuPath's Min/Max diameter
+    assert ibs.mean_caliper_diameter_um(rect, pixel_size_um=1.0) == pytest.approx((10 + 500 ** 0.5) / 2)
 
 
 def test_mean_caliper_diameter_scales_with_pixel_size():
     rect = box(0, 0, 20, 10)
-    assert ibs.mean_caliper_diameter_um(rect, pixel_size_um=0.5) == pytest.approx(7.5)
+    assert ibs.mean_caliper_diameter_um(rect, pixel_size_um=0.5) == pytest.approx((10 + 500 ** 0.5) / 4)
 
 
 def test_mean_caliper_diameter_rotated_rectangle():
@@ -42,7 +43,7 @@ def test_mean_caliper_diameter_rotated_rectangle():
     from shapely.affinity import rotate
 
     rotated = rotate(rect, 30, origin=(0, 0))
-    assert ibs.mean_caliper_diameter_um(rotated, pixel_size_um=1.0) == pytest.approx(15.0, abs=1e-6)
+    assert ibs.mean_caliper_diameter_um(rotated, pixel_size_um=1.0) == pytest.approx((10 + 500 ** 0.5) / 2, abs=1e-6)
 
 
 def test_area_equivalent_diameter_of_disc_area_square():
@@ -120,7 +121,7 @@ def test_load_objects_measurements_as_dict(tmp_path):
     assert len(objs) == 1
     assert objs[0].route == 3
     assert objs[0].bridge_flag == 1.0
-    assert objs[0].mean_caliper_um == pytest.approx(15.0)
+    assert objs[0].mean_caliper_um == pytest.approx((10 + 500 ** 0.5) / 2)
 
 
 def test_load_objects_measurements_as_list(tmp_path):
@@ -230,7 +231,7 @@ def _write_benchmark(tmp_path: Path):
         "D2\timgB\tT1D\tS1\trun2\t40\t2\tM\n"
     )
 
-    # Tile t1: a perfect match (Islet-sized, 40x40 -> mean caliper 40 um).
+    # Tile t1: a perfect match (Islet-sized, 40x40 -> mean caliper (40 + 40*sqrt(2))/2 ~ 48 um).
     islet_coords = [(0, 0), (40, 0), (40, 40), (0, 40), (0, 0)]
     _write_geojson(truth_dir / "t1.geojson", [_feature(islet_coords, "Islet", {"Endocrine route": 3})])
     _write_geojson(pred_dir / "t1.geojson", [_feature(islet_coords, "Islet", {"Endocrine route": 3})])
@@ -367,3 +368,15 @@ def test_sweep_ranks_by_macro_f1(tmp_path):
     ranking = ibs.sweep_parameter_sets(key_df, donors_df, truth_dir, {"good": good_dir, "bad": bad_dir})
     assert ranking.iloc[0]["parameter_set"] == "good"
     assert ranking.iloc[0]["macro_f1"] >= ranking.iloc[1]["macro_f1"]
+
+
+def test_feret_diameters_match_qupath_definitions():
+    """Max Feret is the hull's longest chord; min Feret the narrowest caliper width."""
+    from shapely.geometry import Polygon
+
+    tri = Polygon([(0, 0), (10, 0), (0, 10)])          # right isosceles triangle
+    mn, mx = ibs.feret_diameters(tri)
+    assert mx == pytest.approx(200 ** 0.5)              # the hypotenuse
+    assert mn == pytest.approx(200 ** 0.5 / 2)          # height onto the hypotenuse
+    concave = Polygon([(0, 0), (10, 0), (10, 10), (5, 2), (0, 10)])   # hull is the square
+    assert ibs.feret_diameters(concave) == pytest.approx((10.0, 200 ** 0.5))
