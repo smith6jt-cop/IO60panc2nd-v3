@@ -1,0 +1,6 @@
+# Old, superseded scripts and bundles are kept on disk (and in the v2 archive), not versioned.
+Old/
+*.zip
+__pycache__/
+*.pyc
+.pytest_cache/
