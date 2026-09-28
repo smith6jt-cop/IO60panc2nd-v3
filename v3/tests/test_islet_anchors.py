@@ -274,24 +274,224 @@ def test_anchors_for_image_end_to_end(tmp_path):
     (gj / f"{ia.image_tag(name)}.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
     im = ia.ProjectImage(image=name, tag=ia.image_tag(name), entry_id=1, path=tif, channels=names,
                          pixel_um=0.5, width=W, height=H)
-    rows = ia.anchors_for_image(im, manual_dir=gj, target_um=2.0, with_l0=False)
+    rows = ia.anchors_for_image(im, manual_dir=gj, resolution_um=2.0, n_l0_tiles=16, l0_tile=32)
     by = {r["channel"]: r for r in rows}
     assert set(by) == {"CD99", "INS", "GCG", "SST"}
     assert by["CD99"]["level_um"] == pytest.approx(2.0)
     assert by["INS"]["exposure_ms"] == pytest.approx(75.0)
     assert by["SST"]["biomarker_match"] is True
+    # rows 2..61 x columns 12..61 at 4x downsample: Tissue from x = 48, and 5 um (10 px) inside the image edge
+    assert all(r["n_pixels"] == 60 * 50 for r in rows)
+    assert len({r["annotation_hash"] for r in rows}) == 1 and len({r["params_hash"] for r in rows}) == 1
+    assert by["INS"]["excluded_fraction"] > 0.05          # the islet (+25 um) is excluded in pass 2
     for ch in by:
-        # level-2 block means of Poisson(bg): the anchor sits just above the tissue level,
+        # blurred level-2 block means of Poisson(bg): the anchor sits just above the tissue level,
         # and the bright "islet" does not move it
         assert tissue_bg[ch] < by[ch]["anchor"] < 1.5 * tissue_bg[ch], (ch, by[ch]["anchor"])
-        assert by[ch]["n_pixels"] == 52 * 64                  # columns 12..63 at 4x downsample
         assert np.isfinite(by[ch]["bg_smo_mean"])
+        assert by[ch]["clamp_fraction"] == 0.0 and by[ch]["zero_fraction_l0"] < 0.01   # Poisson(>=30): no zeros
     out = ia.upsert_csv(rows, tmp_path / "a.csv")
     assert len(out) == 4 and out["anchor"].notna().all()
-    # level-0 zero-fraction sampler on the same file (tiles must lie inside tissue)
-    import tifffile
-    with tifffile.TiffFile(tif) as tf:
-        s = tf.series[0]
-        tissue = ia.rasterize_even_odd(ia.read_annotation_rings(gj / f"{im.tag}.geojson"), (64, 64), 4, 4)
-        zf = ia._sample_level0_zero_fraction(s, 2, tissue, 4.0, 4.0, n_tiles=4, tile=32)
-        assert 0.0 <= zf < 0.01
+    # --skip-existing: same export -> skipped; an added Artifact changes the hash -> recomputed
+    cur = {name: ia.current_annotation_hash(im, gj, None)}
+    phash = rows[0]["params_hash"]
+    assert ia.existing_images(tmp_path / "a.csv", ia.METHOD_VERSION, ia.CHANNELS, cur, phash) == {name}
+    feats.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [
+        [[150, 150], [200, 150], [200, 200], [150, 200], [150, 150]]]},
+        "properties": {"classification": {"name": "Artifact"}}})
+    (gj / f"{ia.image_tag(name)}.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
+    cur2 = {name: ia.current_annotation_hash(im, gj, None)}
+    assert cur2[name] != cur[name]
+    assert ia.existing_images(tmp_path / "a.csv", ia.METHOD_VERSION, ia.CHANNELS, cur2, phash) == set()
+    rows2 = ia.anchors_for_image(im, manual_dir=gj, resolution_um=2.0, with_l0=False, with_smo=False)
+    assert rows2[0]["annotation_hash"] == cur2[name]
+    assert rows2[0]["n_pixels"] == 60 * 50 - 13 * 13      # Artifact covers level pixels 37..49 x 37..49
+    assert rows2[0]["n_excluded_polygons"] == 1
+
+
+# ---------------------------------------------------------------- censored background model
+
+def _clamped(mu, sigma, n, seed=0):
+    y = np.random.default_rng(seed).normal(mu, sigma, n)
+    return np.maximum(0, np.rint(y)).astype(np.int64)
+
+
+@pytest.mark.parametrize("mu,sigma", [(-27.0, 27.0), (-5.0, 40.0), (20.0, 35.0), (90.0, 50.0)])
+def test_clamped_normal_recovers_latent_background(mu, sigma):
+    x = _clamped(mu, sigma, 2_000_000, seed=int(abs(mu)))
+    r = ia.fit_clamped_normal(x)
+    assert r["clamp_converged"]
+    assert r["clamp_mu"] == pytest.approx(mu, abs=0.03 * sigma + 0.3)
+    assert r["clamp_sigma"] == pytest.approx(sigma, rel=0.03)
+    from scipy.special import ndtr
+    assert r["clamp_fraction"] == pytest.approx(ndtr((0.5 - mu) / sigma), abs=0.002)
+    assert r["clamp_fit_ks"] < 0.005
+
+
+def test_clamped_normal_ignores_bright_signal_tail():
+    rng = np.random.default_rng(3)
+    bg = _clamped(-20.0, 30.0, 1_500_000, seed=4)
+    signal = np.rint(rng.lognormal(np.log(600), 0.6, 80_000)).astype(np.int64)   # ~5% bright pixels
+    r0, r1 = ia.fit_clamped_normal(bg), ia.fit_clamped_normal(np.r_[bg, signal])
+    assert r1["clamp_mu"] == pytest.approx(r0["clamp_mu"], abs=1.5)
+    assert r1["clamp_sigma"] == pytest.approx(r0["clamp_sigma"], rel=0.05)
+
+
+def test_clamped_normal_is_scale_equivariant():
+    y = np.random.default_rng(8).normal(-10.0, 25.0, 1_000_000)
+    r1 = ia.fit_clamped_normal(np.maximum(0, np.rint(y)))
+    r3 = ia.fit_clamped_normal(np.maximum(0, np.rint(3 * y)))
+    assert r3["clamp_mu"] == pytest.approx(3 * r1["clamp_mu"], abs=1.0)
+    assert r3["clamp_sigma"] == pytest.approx(3 * r1["clamp_sigma"], rel=0.02)
+    assert r3["clamp_fraction"] == pytest.approx(r1["clamp_fraction"], abs=0.005)
+
+
+def test_clamped_normal_unidentifiable_or_small_gives_nan():
+    r = ia.fit_clamped_normal(_clamped(-60.0, 20.0, 500_000))      # ~99.9% zeros
+    assert r["clamp_fraction"] > ia.CLAMP_MAX_FRACTION and np.isnan(r["clamp_mu"]) and np.isnan(r["clamp_sigma"])
+    r = ia.fit_clamped_normal(_clamped(0.0, 10.0, 100))
+    assert np.isnan(r["clamp_mu"]) and np.isnan(r["clamp_fraction"])
+
+
+def test_positivity_threshold_is_max_of_fold_and_floor():
+    assert ia.positivity_threshold(10.0, 5.0) == 50.0
+    assert ia.positivity_threshold(10.0, 5.0, -20.0, 30.0, 3.0) == pytest.approx(70.0)   # floor binds
+    assert ia.positivity_threshold(10.0, 5.0, -20.0, 30.0, 2.0) == pytest.approx(50.0)   # fold binds (40 < 50)
+    assert ia.positivity_threshold(10.0, 5.0, -20.0, 30.0, 0.0) == 50.0                  # k = 0: floor off
+    assert ia.positivity_threshold(10.0, 5.0, np.nan, np.nan, 3.0) == 50.0               # no model: floor off
+
+
+# ---------------------------------------------------------------- two passes: the halo around islets
+
+def _distance_to_centres(shape, centres):
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    d = np.full(shape, np.inf)
+    for cy, cx in centres:
+        d = np.minimum(d, np.hypot(yy - cy, xx - cx))
+    return d
+
+
+def test_two_pass_anchor_excludes_islet_halo():
+    """Signal spill-over decays away from each islet (here 2x the background at the islet edge, 15 um
+    decay length, out to 30 um): it fattens the right shoulder of the background peak, so a one-pass
+    half-max rises; pass 2 drops the 25 um-dilated endocrine mask of pass 1 and recovers the exocrine
+    background."""
+    rng = np.random.default_rng(12)
+    shape = (600, 600)                                   # 1 um pixels
+    centres = [(100, 100), (100, 300), (100, 500), (300, 200), (300, 400), (500, 100), (500, 300), (500, 500)]
+    d = _distance_to_centres(shape, centres)
+    core, halo = d <= 20, (d > 20) & (d <= 50)           # islets r = 20 um
+    bg = lambda s: rng.lognormal(np.log(s), 0.25, shape)
+    ins = bg(40.0)
+    ins[halo] *= 1 + np.exp(-(d[halo] - 20) / 15.0)
+    ins[core] = 3000.0
+    blurred = {"CD99": bg(300.0), "INS": ins, "GCG": bg(120.0), "SST": bg(80.0)}
+    ones = np.ones(shape, bool)
+    truth = ia.log_background(bg(40.0).ravel())["bg_halfmax"]
+    res = ia.compute_anchors(blurred, ones, ones, 1.0, None, two_pass=True, excl_dilate_um=25.0)
+    one = ia.compute_anchors(blurred, ones, ones, 1.0, None, two_pass=False)
+    assert one["INS"]["anchor"] > 1.03 * truth                       # the halo inflates a one-pass anchor
+    assert res["INS"]["anchor_pass1"] == pytest.approx(one["INS"]["anchor"])
+    assert res["INS"]["anchor"] == pytest.approx(truth, rel=0.01)     # pass 2 recovers the exocrine background
+    assert res["_meta"]["excluded_fraction"] == pytest.approx((d <= 45).mean(), abs=0.04)
+    assert res["_meta"]["n_sampled_pass2"] < res["_meta"]["n_sampled"]
+    for ch in ("CD99", "GCG", "SST"):                                  # channels without a halo do not move
+        assert res[ch]["anchor"] == pytest.approx(one[ch]["anchor"], rel=0.01)
+
+
+def test_dilate_um_covers_the_radius_conservatively():
+    m = np.zeros((200, 200), bool)
+    m[100, 100] = True
+    d = ia.dilate_um(m, 25.0, 1.0, block=4)
+    yy, xx = np.mgrid[0:200, 0:200]
+    r = np.hypot(yy - 100, xx - 100)
+    assert d[r <= 25].all()                              # every pixel within 25 um is covered
+    assert not d[r > 25 + 2 * 4 * np.sqrt(2)].any()      # conservative by at most ~ one block diagonal x 2
+
+
+def test_endocrine_mask_uses_the_floor():
+    f = {"CD99": np.array([[0.0, 0.0]]), "INS": np.array([[60.0, 80.0]])}
+    st = {"CD99": dict(anchor=100.0, clamp_mu=np.nan, clamp_sigma=np.nan),
+          "INS": dict(anchor=10.0, clamp_mu=-20.0, clamp_sigma=30.0)}
+    assert ia.endocrine_mask(f, st, 3.0, 5.0, 0.0).tolist() == [[True, True]]     # 60, 80 >= 50
+    assert ia.endocrine_mask(f, st, 3.0, 5.0, 3.0).tolist() == [[False, True]]    # floor -20 + 90 = 70
+
+
+def test_occupied_threshold_finds_the_empty_space_valley():
+    rng = np.random.default_rng(21)
+    empty = rng.lognormal(np.log(15), 0.3, 300_000)
+    tissue = rng.lognormal(np.log(400), 0.3, 700_000)
+    thr = ia.occupied_threshold(np.r_[empty, tissue])
+    assert 30 < thr < 200
+    assert ia.occupied_threshold(tissue) == 0.0          # unimodal: everything is occupied
+
+
+# ---------------------------------------------------------------- analysis mask: union of Tissue minus pLN/Artifact
+
+def test_analysis_mask_unions_tissue_and_subtracts_excluded_classes():
+    shapely = pytest.importorskip("shapely")
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    t1, t2 = _square(10, 10, 110, 90), _square(60, 40, 180, 150)       # two overlapping Tissue polygons
+    pln = _square(150, 120, 200, 200)                                  # a pLN partly outside Tissue
+    art = np.array([[20, 20], [50, 25], [35, 60], [20, 20]], float)     # an Artifact inside Tissue
+    tissue = [("Tissue", [t1]), ("Tissue", [t2])]
+    excluded = [("pLN", [pln]), ("Artifact", [art])]
+    m = ia.analysis_mask(tissue, excluded, (200, 200), 1.0, 1.0)
+    yy, xx = np.mgrid[0:200, 0:200]
+    ref_geom = unary_union([Polygon(t1), Polygon(t2)]).difference(unary_union([Polygon(pln), Polygon(art)]))
+    inside = shapely.contains_xy(ref_geom, xx + 0.5, yy + 0.5)
+    covered = shapely.intersects_xy(ref_geom, xx + 0.5, yy + 0.5)
+    assert ((m == inside) | (m == covered)).all()         # only pixel centres ON an edge may go either way
+    assert m[65, 80]                                      # the Tissue overlap is kept (even-odd would cancel it)
+    assert not m[130, 170] and not m[35, 35]              # pLN and Artifact are cut out
+    # even-odd over all rings (v1.0) cancels the overlap
+    assert not ia.rasterize_even_odd([t1, t2], (200, 200))[65, 80]
+    # downsampled level + 5 um edge margin (pixel centres), as the detector's inner rectangle
+    m2 = ia.analysis_mask([("Tissue", [_square(0, 0, 200, 200)])], [], (100, 100), 2.0, 2.0, (200, 200), 10.0)
+    assert m2[5:95, 5:95].all() and not m2[:4].any() and not m2[:, 96:].any()
+
+
+def test_polygons_area_counts_overlaps_once():
+    pytest.importorskip("shapely")
+    a = ia.polygons_area_um2([("Tissue", [_square(0, 0, 10, 10)]), ("Tissue", [_square(5, 0, 15, 10)])], 0.5)
+    assert a == pytest.approx(150 * 0.25)
+
+
+# ---------------------------------------------------------------- annotation hash (detector parity)
+
+def _fc(*feats):
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": g, "properties": {"classification": {"name": c}}} for c, g in feats]}
+
+
+def test_annotation_hash_format_is_pinned(tmp_path):
+    # The Groovy port (1_panc_objects_v3.groovy, annotationHash) must produce exactly this text.
+    sq = [[0, 0], [10.5, 0], [10.5, 10.25], [0, 10.25], [0, 0]]
+    f = tmp_path / "a.geojson"
+    f.write_text(json.dumps(_fc(("Tissue", {"type": "Polygon", "coordinates": [sq]}),
+                                ("pLN", {"type": "MultiPolygon", "coordinates": [[[[20, 20], [30, 20], [30, 30], [20, 20]]]]}),
+                                ("Islet", {"type": "Polygon", "coordinates": [sq]}))))
+    polys = ia.read_annotation_polygons(f, ("Tissue", "pLN", "Artifact"))
+    assert [c for c, _ in polys] == ["Tissue", "pLN"]
+    lines = ia.annotation_signature(polys)
+    assert lines == ["Tissue|0.00,0.00;10.50,0.00;10.50,10.25;0.00,10.25;0.00,0.00",
+                     "pLN|20.00,20.00;30.00,20.00;30.00,30.00;20.00,20.00"]
+    import hashlib
+    text = "classes=Artifact,Tissue,pLN\n" + "\n".join(lines)
+    assert ia.annotation_hash(polys, ("Tissue", "pLN", "Artifact")) == hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def test_annotation_hash_sensitivity_and_invariance():
+    t = ("Tissue", [_square(0, 0, 100, 100), _square(40, 40, 60, 60)])
+    p = ("pLN", [_square(200, 0, 250, 50)])
+    cls = ("Tissue", "pLN", "Artifact")
+    h = ia.annotation_hash([t, p], cls)
+    assert ia.annotation_hash([p, t], cls) == h                                  # feature order
+    moved = ("Tissue", [_square(0, 0, 100, 100.01), _square(40, 40, 60, 60)])
+    assert ia.annotation_hash([moved, p], cls) != h                              # a vertex moved by 0.01 px
+    art = ("Artifact", [_square(10, 10, 20, 20)])
+    assert ia.annotation_hash([t, p, art], cls) != h                             # an Artifact was drawn
+    assert ia.annotation_hash([t, p], ("Tissue", "pLN")) != h                    # the class list is part of it
+    tiny = ("Tissue", [_square(0, 0, 100, 100) + 0.004, _square(40, 40, 60, 60)])
+    assert ia.annotation_hash([tiny, p], cls) == h                               # below the export's 2 decimals
