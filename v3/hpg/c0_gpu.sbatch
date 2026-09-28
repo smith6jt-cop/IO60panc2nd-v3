@@ -50,7 +50,8 @@ trap restore EXIT
 trap 'exit 143' TERM          # SLURM time limit / scancel: run the EXIT trap, then stop
 
 # ---- fast fail: DJL PyTorch must compute on CUDA before anything else happens ----
-"$V3_QUPATH" script -a "$LOGDIR/djl_cuda_check.json" "$V3DIR/hpg/djl_cuda_check.groovy" > "$LOGDIR/djl_cuda_check.log" 2>&1 || true
+JAVA_TOOL_OPTIONS="-Xmx8g $V3_JAVA_OPTS" \
+    "$V3_QUPATH" script -a "$LOGDIR/djl_cuda_check.json" "$V3DIR/hpg/djl_cuda_check.groovy" > "$LOGDIR/djl_cuda_check.log" 2>&1 || true
 if ! python3 -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])).get("ok") else 1)' "$LOGDIR/djl_cuda_check.json" 2> /dev/null; then
     hpg_log "DJL/CUDA check FAILED -- stopping before the GPU can sit idle; see $LOGDIR/djl_cuda_check.log"
     exit 2

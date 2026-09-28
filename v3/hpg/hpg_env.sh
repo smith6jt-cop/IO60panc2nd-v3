@@ -12,6 +12,11 @@ export V3DIR=$PROJ/scripts/v3
 export QUPATH_HOME=$HOME/QuPath                                  # portable QuPath 0.7 (Linux build) + v0.7/ user dir
 export V3_QUPATH=$QUPATH_HOME/bin/QuPath
 export DJL_CACHE_DIR=$HOME/.djl.ai                               # PyTorch 2.7.1-cu128 engine, copied from the workstation
+# QuPath finds its extensions (InstanSeg, DJL) only through the 'userPath' Java preference; without it
+# headless QuPath 0.7 loads NO extensions (tested 2026-09-28). The pipeline therefore reads its own
+# preference tree, created by setup_hpg.sh, instead of the account's ~/.java (left untouched).
+export V3_PREFS_ROOT=$QUPATH_HOME/pipeline_prefs
+export V3_JAVA_OPTS="-Djava.util.prefs.userRoot=$V3_PREFS_ROOT"  # appended to every QuPath call by run_v3.sh
 export PY=${PY:-$BLUE/venv-v3/bin/python}                        # v3ctl.py needs only python3; post hooks need duckdb+pyarrow
 
 # Provenance site: every node of this cluster writes results/v3/provenance/<tag>/hpg/, so records
