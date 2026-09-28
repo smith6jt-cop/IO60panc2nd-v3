@@ -20,6 +20,7 @@ set -euo pipefail
 # shellcheck source=hpg_env.sh
 source "$(dirname "$0")/hpg_env.sh"
 CHECK_ONLY=0
+PHENO=${PHENO:-/blue/maigan/smith6jt/Xenium_Analysis/data/phenocycler}   # metabolic-panel qptiffs (Xenium lane)
 [[ ${1:-} == --check ]] && CHECK_ONLY=1
 problems=0
 ok()  { printf '  ok       %s\n' "$*"; }
@@ -64,6 +65,12 @@ if [[ -f $PROJ/project.qpproj && -d $PROJ/Images ]]; then
         name=${f##*/}
         target=$BLUE/Images/$name
         if [[ $f != "$PROJ/Images/$name" ]]; then bad "image URI outside $PROJ/Images: $uri"; continue; fi
+        if [[ ! -e $target && -s $PHENO/$name ]]; then
+            # the metabolic-panel images (6533, HDL112, 6347, 6580) have their one /blue copy in the
+            # Xenium project's phenocycler folder; link it rather than transferring a second copy
+            fix "$target -> $PHENO/$name" ln -s "$PHENO/$name" "$target"
+            ((CHECK_ONLY)) && continue
+        fi
         if [[ ! -s $target ]]; then bad "$target (not transferred yet)"; continue; fi
         if [[ -L $f && $(readlink "$f") == "$target" ]]; then
             ok "Images/$name"

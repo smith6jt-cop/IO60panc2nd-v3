@@ -27,8 +27,8 @@
 #  16  DISJOINT pLN fixture (+ a contained pLN): passes I, C, J        -> pLN segmented as its own region, its
 #                                                                         cells parented to pLN (v3 step 8)
 #  17  pLN partly inside Tissue                                        -> preflight FAILS (partial)
-#  18  pLN 5 px into Tissue (<1% of it)                                -> preflight passes with a WARNING,
-#                                                                         step 0 refuses (double segmentation)
+#  18  pLN 5 px into Tissue (<1% of it, ~1700 um^2 shared)            -> preflight FAILS (partial, by step 0's
+#                                                                         10 um^2 rule), before step 0 runs
 #  19  two provenance sites on one image (copy)                        -> blocked until --merge-provenance,
 #                                                                         then each site continues the chain
 # Usage: test_run_v3_fixture.sh [--keep-fixture]   (default rebuilds the fixtures first)
@@ -260,14 +260,13 @@ PP=$FROOT/project_pln_partial/results/v3/provenance/$TAG/$V3_SITE/preflight.json
 check 'exit 1, FAILED at preflight' test "$RC" = 1 -a -n "$(status_is t-pln-partial 'FAILED at preflight' && echo y)"
 check 'preflight says partial' test "$(jq_py "$PP" "(d['step_result']['details']['checks']['pln_vs_tissue']['ok'], sorted(d['step_result']['details']['checks']['pln_vs_tissue']['by_kind'].items()))")" = "(False, [('contained', 1), ('partial', 1)])"
 
-echo '== 18. pLN 5 px into Tissue: preflight warns, step 0 refuses'
+echo '== 18. pLN 5 px into Tissue: preflight fails by step 0 rule, step 0 never runs'
 SQ=$FROOT/project_pln_sliver/data/1/data.qpdata
 runp "$FROOT/project_pln_sliver/project.qpproj" t-pln-sliver --pass C
 SP=$FROOT/project_pln_sliver/results/v3/provenance/$TAG/$V3_SITE
-check 'preflight passed with a step-0 warning' test "$(jq_py "$SP/preflight.json" "(d['status'], any('step 0 will refuse' in w for w in d['step_result']['details']['warnings']))")" = "('pass', True)"
-check 'step 0 FAILED without a sentinel' test "$RC" = 1 -a -n "$(status_is t-pln-sliver 'FAILED at 0' && echo y)" -a ! -e "$SP/0.json"
-check 'step 0 log explains the overlap' grep -q 'overlap Tissue only partly' "$FROOT/project_pln_sliver/results/v3/logs/run_v3/$TAG/0.log"
-check 'no detections were saved (data.qpdata is the one preflight left)' test "$(jq_py "$SP/preflight.json" "d['qpdata']['after']['size']")" = "$(stat -c %s "$SQ")"
+check 'exit 1, FAILED at preflight' test "$RC" = 1 -a -n "$(status_is t-pln-sliver 'FAILED at preflight' && echo y)"
+check 'preflight says partial and explains the shared area' test "$(jq_py "$SP/preflight.json" "(sorted(d['step_result']['details']['checks']['pln_vs_tissue']['by_kind'].items()), any('trim it off the Tissue' in w for w in d['step_result']['details']['warnings']))")" = "([('contained', 1), ('partial', 1)], True)"
+check 'step 0 never ran (no sentinel)' test ! -e "$SP/0.json"
 
 echo '== 19. two provenance sites on one image (on a copy)'
 copy_fixture "$FIXDIR" "$FROOT/project_sites"

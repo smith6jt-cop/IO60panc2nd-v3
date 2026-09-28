@@ -16,7 +16,7 @@
 #                'pLN_contained' inside Tissue. Tests v3 script 0 segmenting a disjoint lymph node, and
 #                step 8 parenting its cells (and the contained one's) to pLN.
 #   pln-partial  like pln, but 'pLN_disjoint' reaches 150 px into Tissue (~19% of its area): preflight fails
-#   pln-sliver   like pln, but it reaches 5 px into Tissue (<1% of its area, ~1700 um^2): preflight passes
+#   pln-sliver   like pln, but it reaches 5 px into Tissue (<1% of its area, ~1700 um^2): preflight fails
 #                with a warning, v3 script 0 refuses (more than 10 um^2 would be segmented twice)
 #
 # Usage: make_fixture.sh [--force] [--variant pln|pln-partial|pln-sliver]
