@@ -691,6 +691,22 @@ def test_tsv_to_parquet_types_nan_and_ids(tmp_path):
     assert res['complete_counts'] == {'Cell: DAPI: Mean': 0, 'Missing col': None}
 
 
+def test_tsv_to_parquet_counts_unmeasurable_debris(tmp_path):
+    # outlines < DEBRIS_MAX_UM2 cover no pixel centre: their NaN is allowed and counted; a normal cell's is not
+    pytest.importorskip('duckdb')
+    tsv = tmp_path / 'd.tsv'
+    tsv.write_text('Image\tObject ID\tCell: Area µm^2\tCell: DAPI: Mean\n'
+                   'im\tid-1\t0.44\tNaN\n'          # sliver: debris
+                   'im\tid-2\t0.0\t\n'              # zero-area outline: debris
+                   'im\tid-3\t85.0\tNaN\n'          # a real cell without the value: a failure
+                   'im\tid-4\t90.0\t512.5\n', encoding='utf-8')
+    res = v3ctl.tsv_to_parquet(tsv, tmp_path / 'd.parquet', A(tmp_path), ('Cell: DAPI: Mean',))
+    assert res['complete_counts'] == {'Cell: DAPI: Mean': 1}
+    assert res['debris_incomplete'] == {'Cell: DAPI: Mean': 2}
+    # the post hook's rule: complete + debris must equal the row count -> here 1 + 2 != 4, so it fails
+    assert res['complete_counts']['Cell: DAPI: Mean'] + res['debris_incomplete']['Cell: DAPI: Mean'] != res['rows']
+
+
 def test_tsv_with_text_in_numeric_column_fails(tmp_path):
     pytest.importorskip('duckdb')
     tsv = tmp_path / 'bad.tsv'

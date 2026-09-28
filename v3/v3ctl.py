@@ -84,6 +84,11 @@ STRING_COLUMNS = {'Image', 'Object ID', 'Object type', 'Name', 'Class', 'Classif
                   'Parent ID', 'ROI', 'TMA core'}
 # cells_parquet: every row must carry these (non-null, non-NaN) -- step 2 measured every detection
 CELLS_REQUIRED_COMPLETE = ('Cell: DAPI: Mean',)
+# A cell outline smaller than this covers no pixel centre, so step 2 cannot measure it (NaN; 6533: 2 of 1,072,057).
+# Such debris is allowed and counted here exactly as the footer's cells_measured check (debris_max_um2) allows it;
+# any larger cell without a required value still fails. The geometry QC downstream drops < 20 um^2 anyway.
+DEBRIS_MAX_UM2 = 5.0
+DEBRIS_AREA_COLUMN = 'Cell: Area µm^2'
 RUN_LOG_FIELDS = ['time_start', 'time_end', 'run_id', 'host', 'image', 'tag', 'step', 'action', 'status',
                   'seconds', 'exit_code', 'attempt_id', 'seq', 'lane', 'slot', 'heap_gb', 'peak_rss_kb',
                   'detections', 'qpdata_bytes', 'script', 'script_sha256', 'message', 'site']
@@ -1462,7 +1467,7 @@ def tsv_to_parquet(tsv: Path, dest: Path, a, required_complete=()) -> dict:
     con.execute(f"COPY (SELECT * FROM {src}) TO '{part}' (FORMAT PARQUET, COMPRESSION ZSTD)")
     n, n_id, n_distinct = con.execute(
         f"""SELECT count(*), count("Object ID"), count(DISTINCT "Object ID") FROM read_parquet('{part}')""").fetchone()
-    complete = {}
+    complete, debris = {}, {}
     for c in required_complete:
         if c not in header:
             complete[c] = None
@@ -1470,9 +1475,14 @@ def tsv_to_parquet(tsv: Path, dest: Path, a, required_complete=()) -> dict:
         q = c.replace('"', '""')
         complete[c] = con.execute(f"""SELECT count(*) FILTER (WHERE "{q}" IS NOT NULL AND NOT isnan("{q}"))
                                       FROM read_parquet('{part}')""").fetchone()[0]
+        if DEBRIS_AREA_COLUMN in header:
+            aq = DEBRIS_AREA_COLUMN.replace('"', '""')
+            debris[c] = con.execute(f"""SELECT count(*) FILTER (WHERE ("{q}" IS NULL OR isnan("{q}"))
+                                                                AND "{aq}" < {DEBRIS_MAX_UM2})
+                                        FROM read_parquet('{part}')""").fetchone()[0]
     con.close()
     return {'columns': len(header), 'rows': n, 'object_id_non_null': n_id, 'object_id_distinct': n_distinct,
-            'complete_counts': complete, 'part': part, 'string_columns': [c for c in header if types[c] == 'VARCHAR']}
+            'complete_counts': complete, 'debris_incomplete': debris, 'part': part, 'string_columns': [c for c in header if types[c] == 'VARCHAR']}
 
 
 def cmd_post(a):
@@ -1509,8 +1519,10 @@ def cmd_post(a):
         for c, n in conv['complete_counts'].items():
             if n is None:
                 problems.append(f"column '{c}' is missing (did step 2 run?)")
-            elif n != conv['rows']:
-                problems.append(f"'{c}' is null/NaN on {conv['rows'] - n} of {conv['rows']} rows (step 2 did not measure every detection)")
+            elif n + conv['debris_incomplete'].get(c, 0) != conv['rows']:
+                bad = conv['rows'] - n - conv['debris_incomplete'].get(c, 0)
+                problems.append(f"'{c}' is null/NaN on {bad} of {conv['rows']} rows of cells >= {DEBRIS_MAX_UM2} um^2 "
+                                f"(step 2 did not measure every detection)")
         if st.post == 'context_parquet':
             cells = out / 'cells' / f'{im.tag}.parquet'
             if cells.exists():
