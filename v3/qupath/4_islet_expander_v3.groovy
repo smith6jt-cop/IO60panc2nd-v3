@@ -18,12 +18,25 @@
  *   'Nearest islet edge distance um'      boundary to boundary, among Islets within NEAREST_WINDOW_UM
  * Only Islet-class objects count as neighbours (clusters and singles do not).
  *
+ * v3 also:
+ *   - clips every band to Tissue minus (BAND_EXCLUDE_CLASSES = Artifact, pLN): a band never claims a fold,
+ *     debris or lymph-node area (script 8 parents Artifact and pLN before IsletExpanded as well);
+ *   - writes 'Artifact overlap um^2' (area inside Artifact annotations) on every Islet, EndocrineCluster and
+ *     EndocrineSingle, so objects drawn/kept over an Artifact at review can be excluded downstream;
+ *   - removes keys that belong to another class after a reclassification: 'Islet: UID', 'Cluster: UID' and
+ *     'Single: UID' stay only on their own class ('Islet: UID' also on bands), the nearest-islet distances
+ *     only on Islets;
+ *   - gives detections that the band removal left directly under the root (bands live at the root) to the
+ *     Tissue (else pLN) annotation containing their nucleus centroid.
+ *
  * Order: signed distances (script 3) exclude IsletExpanded explicitly, so this may run before or after it.
  * Produces: IsletExpanded annotations with "Islet: UID" measurement matching parent core UID.
  */
 
 import org.locationtech.jts.geom.Coordinate
 import org.locationtech.jts.geom.Envelope
+import org.locationtech.jts.geom.prep.PreparedGeometryFactory
+import org.locationtech.jts.operation.union.UnaryUnionOp
 import org.locationtech.jts.geom.GeometryFactory
 import org.locationtech.jts.index.strtree.STRtree
 import org.locationtech.jts.densify.Densifier
@@ -35,6 +48,7 @@ import org.locationtech.jts.operation.union.CascadedPolygonUnion
 import org.locationtech.jts.simplify.TopologyPreservingSimplifier
 
 import qupath.lib.objects.PathObjects
+import qupath.lib.objects.PathObjectTools
 import qupath.lib.objects.classes.PathClass
 import qupath.lib.roi.GeometryTools
 
@@ -47,6 +61,7 @@ evaluate(new File(buildFilePath(PROJECT_BASE_DIR, 'scripts', 'lib', 'common.groo
 String CLASS_CLUSTER       = 'EndocrineCluster'
 String CLASS_SINGLE        = 'EndocrineSingle'
 double NEAREST_WINDOW_UM   = 3000.0    // Drotar: nearest islet among islets within +-3 mm
+String BAND_EXCLUDE_CLASSES = 'Artifact,pLN'   // bands are clipped to Tissue minus these classes
 // ====================================================
 
 def server = getCurrentServer()
@@ -80,6 +95,54 @@ if (!existingBands.isEmpty()) {
     println "[04v3] Removing ${existingBands.size()} existing ${CLASS_ISLET_EXPANDED} annotations."
     removeObjects(existingBands, true)
 }
+
+// Keys that belong to another class (a reviewed object may have been reclassified, e.g. Islet -> EndocrineCluster):
+// each UID key stays only on its own class ('Islet: UID' also on bands), the nearest-islet distances only on Islets.
+def UID_KEYS = ['Islet: UID', 'Cluster: UID', 'Single: UID']
+def OWN_UID = [(CLASS_ISLET): 'Islet: UID', (CLASS_CLUSTER): 'Cluster: UID', (CLASS_SINGLE): 'Single: UID',
+               (CLASS_ISLET_EXPANDED): 'Islet: UID']
+def NEAREST_KEYS = ["Nearest islet centroid distance ${UNIT}".toString(), "Nearest islet edge distance ${UNIT}".toString()]
+def staleRemoved = new TreeMap()
+getAnnotationObjects().each { a ->
+    String c = a.getPathClass()?.toString()
+    def ml = a.getMeasurementList()
+    def drop = UID_KEYS.findAll { it != OWN_UID[c] && ml.containsKey(it) }
+    if (c != CLASS_ISLET) drop += NEAREST_KEYS.findAll { ml.containsKey(it) }
+    if (!drop.isEmpty()) {
+        ml.removeAll(drop as String[])
+        drop.each { k -> staleRemoved["${c}: ${k}".toString()] = (staleRemoved["${c}: ${k}".toString()] ?: 0) + 1 }
+    }
+    ml.close()
+}
+if (!staleRemoved.isEmpty()) println "[04v3] Removed keys of another class (reclassified objects): ${staleRemoved}"
+
+// Band clipping area: Tissue minus BAND_EXCLUDE_CLASSES; Artifact overlap on endocrine objects
+def unionOf = { List<String> classes ->
+    def gs = getAnnotationObjects().findAll { it.getPathClass()?.toString() in classes && it.getROI()?.isArea() }.collect { it.getROI().getGeometry() }
+    gs.isEmpty() ? null : UnaryUnionOp.union(gs)
+}
+def bandExclude = BAND_EXCLUDE_CLASSES.split(',').collect { it.trim() }.findAll { it }
+def tissueU = unionOf([CLASS_TISSUE])
+def bandExclU = unionOf(bandExclude)
+def bandArea = tissueU == null ? null : (bandExclU == null ? tissueU : tissueU.difference(bandExclU))
+def bandAreaPrep = bandArea == null ? null : PreparedGeometryFactory.prepare(bandArea)
+if (bandArea == null) println "[04v3] WARN: no ${CLASS_TISSUE} annotation; bands are not clipped"
+else println String.format("[04v3] bands are clipped to %s minus %s (%.2f mm^2)", CLASS_TISSUE, bandExclude,
+        bandArea.getArea() * pxSize * pxSize / 1e6)
+def artifactU = unionOf(['Artifact'])
+def artifactPrep = artifactU == null ? null : PreparedGeometryFactory.prepare(artifactU)
+String kArtifact = "Artifact overlap ${UNIT}^2".toString()
+int nOnArtifact = 0
+(coresAll + clusters + singles).each { o ->
+    double a = 0
+    if (artifactPrep != null) {
+        def g = o.getROI().getGeometry()
+        if (artifactPrep.intersects(g)) a = (artifactPrep.covers(g) ? g.getArea() : g.intersection(artifactU).getArea()) * pxSize * pxSize
+    }
+    if (a > 0) nOnArtifact++
+    putMeas(o, kArtifact, a)
+}
+println "[04v3] '${kArtifact}' written on ${coresAll.size() + clusters.size() + singles.size()} endocrine objects (${nOnArtifact} overlap an Artifact)"
 
 // Assign stable, UNIQUE UIDs per class.
 // - Sort with an explicit comparator: sort { [x, y] } compares the key Lists by hashCode in Groovy
@@ -289,6 +352,12 @@ coresAll.parallelStream().forEach { core ->
             }
         }
 
+        // v3: never outside Tissue, never over an Artifact or a pLN
+        if (bandAreaPrep != null && !bandAreaPrep.covers(band)) {
+            band = band.intersection(bandArea)
+            if (band == null || band.isEmpty()) return
+        }
+
         band = toPolygonal(band)
         if (band == null || band.isEmpty()) return
 
@@ -313,6 +382,25 @@ coresAll.each { core ->
     newAnns << ann
 }
 addObjects(newAnns)
+
+// Detections of the removed bands moved to the bands' parent, the root. Give them to the region containing their
+// nucleus centroid (Tissue first, then pLN: the test point script 8 uses); script 8 parents them into the new bands.
+def gfR = GeometryTools.getDefaultFactory()
+def orphans = getCurrentHierarchy().getRootObject().getChildObjects().findAll { it.isDetection() }
+if (!orphans.isEmpty()) {
+    def claimed = Collections.newSetFromMap(new IdentityHashMap())
+    def moved = new LinkedHashMap()
+    [CLASS_TISSUE, 'pLN'].each { rc ->
+        getAnnotationObjects().findAll { it.getPathClass()?.toString() == rc && it.getROI()?.isArea() }.each { region ->
+            def prep = PreparedGeometryFactory.prepare(region.getROI().getGeometry())
+            def kids = orphans.findAll { d -> if (claimed.contains(d)) return false
+                def r = PathObjectTools.getROI(d, true)
+                prep.contains(gfR.createPoint(new Coordinate(r.getCentroidX(), r.getCentroidY()))) }
+            if (!kids.isEmpty()) { region.addChildObjects(kids); claimed.addAll(kids); moved[rc] = (moved[rc] ?: 0) + kids.size() }
+        }
+    }
+    println "[04v3] Re-parented detections left under the root: ${moved}; ${orphans.size() - claimed.size()} lie in no Tissue/pLN and stay"
+}
 fireHierarchyUpdate()
 println "[04v3] Created ${newAnns.size()} ${CLASS_ISLET_EXPANDED} annotations for ${coresAll.size()} ${CLASS_ISLET}; " +
         "named ${clusters.size()} clusters and ${singles.size()} singles. Done."

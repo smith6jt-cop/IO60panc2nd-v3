@@ -6,12 +6,14 @@
  *           the detection centroid. v3 uses an EXPLICIT priority order; the first annotation that
  *           contains a detection's test point claims it:
  *
- *               Islet -> EndocrineCluster -> EndocrineSingle -> IsletExpanded -> Artifact -> pLN -> Tissue
+ *               Islet -> EndocrineCluster -> EndocrineSingle -> Artifact -> pLN -> IsletExpanded -> Tissue
  *
- *   - endocrine objects before the 20 um bands, so a cluster or single lying inside an islet's band keeps
- *     its own cells (bands exist for Islets only; 4_islet_expander_v3.groovy);
- *   - Artifact (folds, debris; drawn at gate 1) before pLN and Tissue, so its cells can be excluded
- *     downstream by Parent;
+ *   - endocrine objects first, so a cluster or single lying inside an islet's band keeps its own cells (bands
+ *     exist for Islets only; 4_islet_expander_v3.groovy); an endocrine object drawn over an Artifact keeps its
+ *     cells too, and carries 'Artifact overlap um^2' (script 4) for exclusion downstream;
+ *   - Artifact (folds, debris; drawn at gate 1) and pLN BEFORE the 20 um bands and Tissue, so a band can never
+ *     claim cells of a fold or of the lymph node (script 4 also clips bands to Tissue minus Artifact and pLN),
+ *     and their cells can be excluded downstream by Parent;
  *   - Tissue LAST: it contains everything else.
  * Every other annotation class (e.g. Nerve, Lymphatic, Blood_vessel from script 7, stale Other: Gal3Norm)
  * is NOT used for parenting; their annotation counts, and how many cells they would have covered, are
@@ -27,7 +29,7 @@ import qupath.lib.roi.GeometryTools
 evaluate(new File(buildFilePath(PROJECT_BASE_DIR, 'scripts', 'lib', 'common.groovy')))
 
 // ==================== PARAMETERS ====================
-List<String> PARENT_ORDER = ['Islet', 'EndocrineCluster', 'EndocrineSingle', 'IsletExpanded', 'Artifact', 'pLN', 'Tissue']
+List<String> PARENT_ORDER = ['Islet', 'EndocrineCluster', 'EndocrineSingle', 'Artifact', 'pLN', 'IsletExpanded', 'Tissue']
 // true: test the NUCLEUS centroid (cells), the same point 3_signed_distance uses, so a cell parented
 // to an Islet always has a negative "Signed distance to annotation with Islet". false: whole-cell
 // centroid (what QuPath's own hierarchy resolution uses).
