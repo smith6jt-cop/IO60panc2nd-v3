@@ -331,7 +331,7 @@ run_step() {   # name tag step lane heap threads timeout_min post  -> 0 pass, 1 
         "$WSCRIPT" "$SCRIPT_SRC" >> "$logf"
     say "$tag: $step: start (slot $SLOT_NAME, heap ${HEAP}g, reserved ${resv}g, attempt $ATTEMPT)"
     t0=$SECONDS
-    JAVA_TOOL_OPTIONS="-Xmx${HEAP}g -Djava.util.concurrent.ForkJoinPool.common.parallelism=$threads" \
+    JAVA_TOOL_OPTIONS="-Xmx${HEAP}g -Djava.util.concurrent.ForkJoinPool.common.parallelism=$threads${V3_JAVA_OPTS:+ $V3_JAVA_OPTS}" \
         /usr/bin/time -v -o "$worker/time.txt" \
         timeout --kill-after=120 "${tmo}m" \
         "$QUPATH" script -p "$WPROJECT" -i "$name" "${QARGS[@]}" "$WSCRIPT" < /dev/null >> "$logf" 2>&1 || rc=$?

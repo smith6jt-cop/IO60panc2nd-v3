@@ -89,10 +89,31 @@ echo "== QuPath, InstanSeg model, DJL cache"
 if [[ -x $V3_QUPATH ]]; then ok "$V3_QUPATH"; else bad "$V3_QUPATH (portable QuPath 0.7 Linux build)"; fi
 model=$QUPATH_HOME/v0.7/instanseg/downloaded/fluorescence_nuclei_and_cells-0.1.1
 if [[ -d $model ]]; then ok 'InstanSeg model'; else bad "$model (script 0 hard-codes this path)"; fi
-if compgen -G "$DJL_CACHE_DIR/pytorch/*cu12*" > /dev/null; then
-    ok "DJL PyTorch CUDA engine in $DJL_CACHE_DIR"
+# QuPath 0.7's DJL needs PyTorch 2.7.1; an older engine (e.g. 2.5.1-cu124) would trigger a download on a
+# compute node without internet, and 2.7.1 needs the CUDA 12.8 build for Blackwell (B200)
+if [[ -d $DJL_CACHE_DIR/pytorch/2.7.1-cu128-linux-x86_64 && -f $DJL_CACHE_DIR/pytorch/2.7.1.txt ]]; then
+    ok "DJL PyTorch 2.7.1-cu128 engine in $DJL_CACHE_DIR"
 else
-    bad "$DJL_CACHE_DIR/pytorch/<version>-cu128-linux-x86_64 (copy ~/.djl.ai from the workstation)"
+    bad "$DJL_CACHE_DIR/pytorch/2.7.1-cu128-linux-x86_64 + 2.7.1.txt (copy them from the workstation's ~/.djl.ai)"
+fi
+# the pipeline's own Java preference tree: userPath -> $QUPATH_HOME/v0.7, so headless QuPath loads the
+# InstanSeg + DJL extensions from there (see hpg_env.sh). Node names are Java's encodings of the
+# preference path QuPath 0.7 uses (copied from a working workstation tree).
+prefs_node=$V3_PREFS_ROOT/.java/.userPrefs/$'_!\'k!bw!u!\'c!a@"0!\'g!d@"i!#4!c@"1!(!!}@"0!\'g='/'_!$!!.g!3'
+make_prefs() {
+    mkdir -p "$prefs_node"
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8" standalone="no"?>' \
+        '<!DOCTYPE map SYSTEM "http://java.sun.com/dtd/preferences.dtd">' '<map MAP_XML_VERSION="1.0">' \
+        "  <entry key=\"userPath\" value=\"$QUPATH_HOME/v0.7\"/>" '</map>' > "$prefs_node/prefs.xml"
+}
+# QuPath DELETES a userPath whose folder does not exist (and saves that on exit), so write it only after
+# ~/QuPath/v0.7 has been copied over
+if [[ ! -d $QUPATH_HOME/v0.7/extensions ]]; then
+    bad "$QUPATH_HOME/v0.7/extensions (copy ~/QuPath from the workstation, then re-run setup_hpg.sh)"
+elif grep -q "key=\"userPath\" value=\"$QUPATH_HOME/v0.7\"" "$prefs_node/prefs.xml" 2> /dev/null; then
+    ok "pipeline QuPath preferences (userPath -> $QUPATH_HOME/v0.7)"
+else
+    fix "pipeline QuPath preferences in $V3_PREFS_ROOT" make_prefs
 fi
 # TODO(HiPerGator): run hpg/djl_cuda_check.groovy once in a short GPU session of each GPU type before the
 # first array (c0_gpu.sbatch runs it anyway and stops on failure).
