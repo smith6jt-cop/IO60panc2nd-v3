@@ -7,12 +7,14 @@
 #
 #   IMAGES_FILE=... sbatch --account=clive --qos=clive --array=0-5%1 c2_cpu.sbatch     (hpg_submit.sh does this)
 # Environment: IMAGES_FILE (required), STEPS (default 2; e.g. 2,C_cells,C_geojson).
+# --time must exceed the sum of the STEPS' timeouts in steps.tsv plus a margin (step 2 alone: 1440 min):
+# the job checks this first, and hpg_submit.sh computes --time for the STEPS it submits.
 #SBATCH --job-name=v3_c2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=220gb
-#SBATCH --time=24:00:00
+#SBATCH --time=25:00:00
 #SBATCH --output=/blue/maigan/smith6jt/IO60panc2nd_v3/logs/%x_%A_%a.log
 # TODO(HiPerGator): size --mem/--time from the pilot; steps.tsv caps step 2 at -Xmx160g, and the JVM's
 # resident size can approach that cap, so --mem must stay well above it.
@@ -23,6 +25,7 @@ source /home/smith6jt/IO60panc2nd/scripts/v3/hpg/hpg_env.sh
 IMAGE=$(hpg_image_for_task)
 [[ -n $IMAGE ]] || { hpg_log "no image for task ${SLURM_ARRAY_TASK_ID:-?}"; exit 1; }
 STEPS=${STEPS:-2}
+hpg_check_budget --steps "$STEPS" --margin-min 30
 threads=$((${SLURM_CPUS_PER_TASK:-32} - 4))     # leave a few cores for GC and I/O
 hpg_log "steps $STEPS for '$IMAGE' on $(hostname), step 2 N_THREADS=$threads"
 

@@ -10,12 +10,14 @@
 # run_v3.sh orders them (R_import before 3/8) and refuses to run pass J if R_import failed.
 #
 #   IMAGES_FILE=... sbatch --account=clive --qos=clive --array=0-5%1 j_cpu.sbatch     (hpg_submit.sh does this)
+# --time must exceed the sum of the pass R,J timeouts in steps.tsv plus a margin (1020 + 30 min today):
+# the job checks this first (hpg_check_budget); hpg_submit.sh computes --time.
 #SBATCH --job-name=v3_j
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=180gb
-#SBATCH --time=12:00:00
+#SBATCH --time=18:00:00
 #SBATCH --output=/blue/maigan/smith6jt/IO60panc2nd_v3/logs/%x_%A_%a.log
 set -euo pipefail
 # shellcheck source=hpg_env.sh
@@ -23,17 +25,16 @@ source /home/smith6jt/IO60panc2nd/scripts/v3/hpg/hpg_env.sh
 
 IMAGE=$(hpg_image_for_task)
 [[ -n $IMAGE ]] || { hpg_log "no image for task ${SLURM_ARRAY_TASK_ID:-?}"; exit 1; }
+hpg_check_budget --passes R,J --margin-min 30
 tag=$(python3 -c 'import re, sys; print(re.sub(r"[^A-Za-z0-9._-]+", "_", sys.argv[1]))' "$IMAGE")
 reviewed=$PROJ/results/v3/reviewed_islets/$tag.geojson
 [[ -s $reviewed ]] || { hpg_log "missing $reviewed -- export it on the workstation (--pass X) and sync it"; exit 1; }
 # run_v3 tracks step order, not input content: re-import when this file differs from the one imported
+# (the current R_import record, as the merged provenance view sees it)
 force=()
-if ! python3 - "$reviewed" "$PROJ/results/v3/provenance/$tag/R_import.json" << 'PYEOF'; then force=(--force R_import); fi
-import hashlib, json, os, sys
-rec = json.load(open(sys.argv[2])) if os.path.exists(sys.argv[2]) else {}
-imported = rec.get('status') == 'pass' and ((rec.get('step_result') or {}).get('details') or {}).get('source_sha256')
-sys.exit(0 if imported == hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest() else 1)
-PYEOF
+imported=$("$PY" "$V3DIR/v3ctl.py" --project "$PROJ/project.qpproj" show-record --image "$IMAGE" --step R_import \
+    --field step_result.details.source_sha256 --require-pass 2> /dev/null || true)
+if [[ $imported != "$(sha256sum "$reviewed" | cut -d' ' -f1)" ]]; then force=(--force R_import); fi
 hpg_log "passes R,J for '$IMAGE' on $(hostname) with $reviewed ${force[*]:-(already imported)}"
 
 rc=0

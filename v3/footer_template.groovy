@@ -6,6 +6,9 @@
 // a failure. (QuPath's exit code is not trusted: an early `return` exits 0.)
 // It (a) checks the step's postcondition, (b) saves the image data when the policy is footer-saves
 // and the check passed, and (c) writes the provenance JSON that doubles as the success sentinel.
+// No sentinel at all (the footer throws) when data.qpdata changed under the step: something else wrote
+// the file, and a sentinel recording the new state would launder that change into the custody chain.
+// The same holds when the footer's own save failed (QuPath then leaves data.qpdata.bkp behind).
 // Rules for this code: no `import` lines (illegal after statements), fully-qualified class names,
 // and every identifier -- closure parameters included -- starts with __v3_, because Groovy refuses
 // to redeclare a name that the step script already declared.
@@ -79,6 +82,43 @@ try {
     } else if (__v3_pc == 'detections_present') {
         __v3_check.pass = __v3_dets.size() > 0
         __v3_check.message = "${__v3_dets.size()} detections"
+    } else if (__v3_pc == 'regions_detected') {
+        // every region annotation (Tissue, pLN) must contain detections: counted by detection centroid
+        // inside the region's ROI, so a pLN lying inside Tissue (segmented with it) counts as well
+        def __v3_rc = __v3_params.classes ?: ['Tissue', 'pLN']
+        def __v3_regions = __v3_anns.findAll { __v3_cls(it) in __v3_rc && it.getROI() != null && it.getROI().isArea() }
+        int __v3_nd = __v3_dets.size()
+        double[] __v3_cx = new double[__v3_nd]
+        double[] __v3_cy = new double[__v3_nd]
+        for (int __v3_i = 0; __v3_i < __v3_nd; __v3_i++) {
+            def __v3_droi = __v3_dets[__v3_i].getROI()
+            __v3_cx[__v3_i] = __v3_droi.getCentroidX()
+            __v3_cy[__v3_i] = __v3_droi.getCentroidY()
+        }
+        double __v3_pxArea = __v3_imageData.getServer().getPixelCalibration().getPixelWidth().doubleValue() *
+                __v3_imageData.getServer().getPixelCalibration().getPixelHeight().doubleValue()
+        def __v3_rows = []
+        __v3_regions.each { __v3_r ->
+            def __v3_g = __v3_r.getROI().getGeometry()
+            def __v3_env = __v3_g.getEnvelopeInternal()
+            def __v3_loc = new org.locationtech.jts.algorithm.locate.IndexedPointInAreaLocator(__v3_g)
+            long __v3_n = 0
+            for (int __v3_j = 0; __v3_j < __v3_nd; __v3_j++) {
+                if (!__v3_env.contains(__v3_cx[__v3_j], __v3_cy[__v3_j])) continue
+                if (__v3_loc.locate(new org.locationtech.jts.geom.Coordinate(__v3_cx[__v3_j], __v3_cy[__v3_j])) !=
+                        org.locationtech.jts.geom.Location.EXTERIOR) __v3_n++
+            }
+            __v3_rows << [id: __v3_r.getID().toString(), name: __v3_r.getName(), 'class': __v3_cls(__v3_r),
+                          area_um2: __v3_r.getROI().getArea() * __v3_pxArea, detections: __v3_n]
+        }
+        def __v3_emptyRegions = __v3_rows.findAll { it.detections == 0 }
+        String __v3_firstClass = __v3_rc[0]
+        boolean __v3_hasFirst = __v3_rows.any { it['class'] == __v3_firstClass }
+        __v3_check.details = [classes: __v3_rc, regions: __v3_rows, empty_regions: __v3_emptyRegions.size()]
+        __v3_check.pass = __v3_nd > 0 && __v3_hasFirst && __v3_emptyRegions.isEmpty()
+        __v3_check.message = "${__v3_nd} detections; " + (__v3_hasFirst ? '' : "no ${__v3_firstClass} annotation; ") +
+                __v3_rows.collect { "${it['class']}${it.name ? " '" + it.name + "'" : ''}=${it.detections}" }.join(', ') +
+                (__v3_emptyRegions.isEmpty() ? '' : " -- ${__v3_emptyRegions.size()} region(s) WITHOUT detections")
     } else if (__v3_pc == 'islets_present') {
         def __v3_ic = __v3_params.classes ?: ['Islet']
         def __v3_icn = new LinkedHashMap()
@@ -149,35 +189,69 @@ boolean __v3_noChange = (__v3_result instanceof Map) && __v3_result.changed == f
 boolean __v3_wantSave = __v3_policy == 'footer-saves' && __v3_check.pass && __v3_error == null && !__v3_noChange
 boolean __v3_saved = false
 def __v3_saveError = null
+String __v3_saveSkipped = null
 long __v3_saveMs = 0
+// stat the file QuPath itself saves (the worker's data/ symlink resolves to the project's data/)
+String __v3_qpPath = __v3_entry.getEntryPath().resolve('data.qpdata').toString()
+def __v3_before = __v3_cfg.qpdata_before
+def __v3_same = { Map __v3_a, Map __v3_b ->
+    __v3_a.exists == __v3_b.exists && (!__v3_a.exists ||
+            ((__v3_a.size as long) == (__v3_b.size as long) && (__v3_a.mtime_ns as long) == (__v3_b.mtime_ns as long)))
+}
+def __v3_refuse = { String __v3_why ->
+    // no sentinel: the next plan sees data.qpdata differ from the last record and blocks the image
+    println "[run_v3] REFUSED: step ${__v3_cfg.step}: ${__v3_why}"
+    throw new IllegalStateException("[run_v3] REFUSED: step ${__v3_cfg.step}: ${__v3_why}".toString())
+}
 if (__v3_wantSave) {
-    long __v3_s0 = System.currentTimeMillis()
-    try {
-        __v3_entry.saveImageData(__v3_imageData)
-        __v3_saved = true
-    } catch (Throwable __v3_t2) {
-        __v3_saveError = __v3_t2.toString()
+    // (b1) the file must still be the one the driver recorded when this step began
+    def __v3_pre = __v3_stat(__v3_qpPath)
+    if (!__v3_same(__v3_pre, __v3_before))
+        __v3_refuse("not saving: data.qpdata changed since the step began (then size=${__v3_before.size} " +
+                "mtime_ns=${__v3_before.mtime_ns}, now size=${__v3_pre.size} mtime_ns=${__v3_pre.mtime_ns}); " +
+                "something else wrote it (a GUI save?). No sentinel written.")
+    // (b2) never start a save that the step's timeout (or the SLURM job's end) could cut in half
+    def __v3_deadline = __v3_cfg.deadline_epoch_ms
+    double __v3_marginMin = (__v3_cfg.save_margin_min ?: 0) as double
+    long __v3_nowMs = System.currentTimeMillis()
+    if (__v3_deadline != null && (__v3_deadline as long) > 0 &&
+            __v3_nowMs + (long) (__v3_marginMin * 60000) > (__v3_deadline as long)) {
+        __v3_saveSkipped = String.format('save skipped: %.1f min before the deadline, margin %.1f min ' +
+                '(a save cut off by the timeout would leave data.qpdata half-written)',
+                ((__v3_deadline as long) - __v3_nowMs) / 60000.0, __v3_marginMin)
+    } else {
+        long __v3_s0 = System.currentTimeMillis()
+        try {
+            __v3_entry.saveImageData(__v3_imageData)
+            __v3_saved = true
+        } catch (Throwable __v3_t2) {
+            __v3_saveError = __v3_t2.toString()
+        }
+        __v3_saveMs = System.currentTimeMillis() - __v3_s0
+        if (__v3_saveError != null) {
+            println "[run_v3] SAVE FAILED: step ${__v3_cfg.step}: ${__v3_saveError}; check data.qpdata and " +
+                    "data.qpdata.bkp (QuPath restores the .bkp only if the write itself threw). No sentinel written."
+            throw new IllegalStateException("[run_v3] SAVE FAILED: step ${__v3_cfg.step}: ${__v3_saveError}".toString())
+        }
     }
-    __v3_saveMs = System.currentTimeMillis() - __v3_s0
 }
 
 // ---- (c) provenance / sentinel ------------------------------------------------------------------
-// stat the file QuPath itself saved (the worker's data/ symlink resolves to the project's data/)
-def __v3_qp = __v3_stat(__v3_entry.getEntryPath().resolve('data.qpdata').toString())
+def __v3_qp = __v3_stat(__v3_qpPath)
 __v3_qp.path = __v3_cfg.qpdata_before.path
-def __v3_before = __v3_cfg.qpdata_before
-boolean __v3_unchanged = __v3_qp.exists == __v3_before.exists && __v3_qp.size == __v3_before.size &&
-        __v3_qp.mtime_ns == __v3_before.mtime_ns
+boolean __v3_unchanged = __v3_same(__v3_qp, __v3_before)
 String __v3_policyMsg = null
 if (__v3_policy == 'footer-saves') {
-    if (__v3_wantSave && !__v3_saved) __v3_policyMsg = 'footer save failed: ' + __v3_saveError
-    else if (!__v3_wantSave && !__v3_unchanged) __v3_policyMsg = 'data.qpdata changed although the footer did not save'
+    if (!__v3_saved && !__v3_unchanged)
+        __v3_refuse('data.qpdata changed during the step although the footer did not save; something else wrote it. No sentinel written.')
+    if (__v3_saveSkipped != null) __v3_policyMsg = __v3_saveSkipped
 } else if (__v3_policy == 'self-saves') {
     // the step must have written the file during THIS JVM, or its result is not on disk
     if (!__v3_qp.exists || (__v3_qp.mtime_ns as long) < __v3_jvmStart * 1000000L)
         __v3_policyMsg = 'step is declared self-saves but data.qpdata was not written during this run'
 } else if (__v3_policy == 'never') {
-    if (!__v3_unchanged) __v3_policyMsg = 'step is declared never-saves but data.qpdata changed'
+    if (!__v3_unchanged)
+        __v3_refuse('step is declared never-saves but data.qpdata changed during it; something else wrote it. No sentinel written.')
 } else {
     __v3_policyMsg = "unknown save policy '${__v3_policy}'"
 }
@@ -210,6 +284,7 @@ def __v3_prov = [
         entry_id     : __v3_entry.getID(),
         project      : __v3_cfg.project,
         worker_project: __v3_cfg.worker_project,
+        site         : __v3_cfg.site,
         script       : [source_path         : __v3_cfg.source_script,
                         source_sha256       : __v3_cfg.source_sha256,
                         body_sha256         : __v3_cfg.body_sha256,
@@ -218,13 +293,16 @@ def __v3_prov = [
                         footer_template_sha256: __v3_cfg.footer_template_sha256,
                         selection           : __v3_cfg.script_selection,
                         overrides           : __v3_cfg.overrides,
-                        args                : __v3_cfg.args],
+                        args                : __v3_cfg.args,
+                        repo_git            : __v3_cfg.repo_git],
         postcondition: __v3_check + [error: __v3_error],
         save         : [policy: __v3_policy, wanted: __v3_wantSave, saved: __v3_saved, error: __v3_saveError,
-                        seconds: __v3_saveMs / 1000.0, declared_no_change: __v3_noChange, policy_error: __v3_policyMsg],
+                        seconds: __v3_saveMs / 1000.0, declared_no_change: __v3_noChange, policy_error: __v3_policyMsg,
+                        skipped: __v3_saveSkipped, deadline_epoch_ms: __v3_cfg.deadline_epoch_ms,
+                        save_margin_min: __v3_cfg.save_margin_min],
         step_result  : __v3_result,
         counts       : __v3_counts,
-        qpdata       : [path: __v3_qp.path, before: __v3_before, after: __v3_qp],
+        qpdata       : [path: __v3_qp.path, before: __v3_before, after: __v3_qp, bkp: __v3_stat(__v3_qpPath + '.bkp')],
         outputs      : __v3_outputs,
         transient_outputs: __v3_transient,
         host         : __v3_cfg.host,

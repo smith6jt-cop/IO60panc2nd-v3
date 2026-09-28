@@ -4,7 +4,8 @@
 # Sends from the local NVMe (Images/), never from the departmental share (~7 MB/s per task).
 # Images already on /blue with an identical byte size are skipped (6533 and HDL112 were uploaded
 # 2026-09-15 under Xenium_Analysis/data/phenocycler; setup_hpg.sh symlinks them into place).
-# Must run BEFORE relocate_images.sh: Globus Connect Personal here only exports ~/ and /data.
+# Globus Connect Personal here exports ~/, /data and (since 2026-09-28) /scratch, so images relocated
+# to /scratch/io60/Images can be sent from their symlink targets too.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
