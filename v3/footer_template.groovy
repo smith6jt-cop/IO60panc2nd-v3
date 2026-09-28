@@ -144,10 +144,21 @@ try {
                 "${__v3_bands.size()} bands (${__v3_orphan} orphan)"
     } else if (__v3_pc == 'cells_measured') {
         String __v3_mk = (__v3_params.measurement ?: ['Cell: DAPI: Mean'])[0]
-        long __v3_mm = __v3_nMissing(__v3_mk)
-        __v3_check.details = [measurement: __v3_mk, missing: __v3_mm]
+        // An outline that covers no pixel centre cannot be measured (NaN). InstanSeg leaves a few such slivers
+        // (6533: 2 of 1,072,057, areas 0.44 and 0 um^2). They are allowed, and counted, below debris_max_um2
+        // (default 5, far under the 20 um^2 geometry-QC minimum); a larger cell without the value still fails.
+        double __v3_dmax = ((__v3_params.debris_max_um2 ?: ['5'])[0]) as double
+        def __v3_cal = __v3_imageData.getServer().getPixelCalibration()
+        double __v3_px2 = __v3_cal.getPixelWidth().doubleValue() * __v3_cal.getPixelHeight().doubleValue()
+        def __v3_miss = __v3_dets.parallelStream().filter { Double.isNaN(it.getMeasurementList().get(__v3_mk)) }
+                .collect(java.util.stream.Collectors.toList())
+        long __v3_deb = __v3_miss.count { it.getROI().getArea() * __v3_px2 < __v3_dmax }
+        long __v3_mm = __v3_miss.size() - __v3_deb
+        __v3_check.details = [measurement: __v3_mk, missing: __v3_mm, debris_unmeasured: __v3_deb,
+                              debris_max_um2: __v3_dmax]
         __v3_check.pass = __v3_dets.size() > 0 && __v3_mm == 0
-        __v3_check.message = "'${__v3_mk}' missing on ${__v3_mm} of ${__v3_dets.size()} detections"
+        __v3_check.message = "'${__v3_mk}' missing on ${__v3_mm} of ${__v3_dets.size()} detections" +
+                (__v3_deb > 0 ? "; ${__v3_deb} unmeasurable debris outline(s) < ${__v3_dmax} um^2 allowed" : '')
     } else if (__v3_pc == 'signed_distance') {
         // the unit comes from the calibration ('µm'), exactly as 3_signed_distance.groovy names it
         def __v3_sc = __v3_params.classes ?: ['Islet']
