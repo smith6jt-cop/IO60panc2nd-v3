@@ -2,8 +2,10 @@
  * exports.groovy -- read-only exports for run_v3.sh (passes C and J). Never saves the image.
  *
  *   args[0] = mode, args[1] = output path
- *   cells        every detection measurement (saveDetectionMeasurements) -> TSV on /scratch;
- *                v3ctl.py post converts it to Parquet, checks rows and Object IDs, deletes it
+ *   cells        every detection measurement (saveDetectionMeasurements) EXCEPT 'Signed distance…'
+ *                (step 3's columns, exported by 'context') -> TSV on /scratch; v3ctl.py post converts it
+ *                to Parquet, checks rows, Object IDs and 'Cell: DAPI: Mean', deletes it. The column set is
+ *                therefore the same whether this export runs before or after step 3.
  *   context      Object ID, Parent, centroids and every 'Signed distance…' column -> TSV -> Parquet
  *   annotations  annotation measurement table (saveAnnotationMeasurements) -> TSV, kept
  *   islets       every annotation except Tissue and pLN as a GeoJSON FeatureCollection
@@ -38,13 +40,23 @@ def headerOf = { File f -> f.withReader('UTF-8') { it.readLine() }?.split('\t', 
 def countLines = { File f -> long n = 0; f.withReader('UTF-8') { r -> while (r.readLine() != null) n++ }; n }
 
 if (mode == 'cells') {
-    saveDetectionMeasurements(partFile.getPath())
+    // the export's own column list (metadata columns + every measurement), minus the columns that later
+    // steps add: signed distances belong to the context export
+    def table = new qupath.lib.gui.measure.ObservableMeasurementTableData()
+    table.setImageData(imageData, detections)
+    def allNames = new ArrayList(table.getAllNames())
+    def later = allNames.findAll { it.startsWith('Signed distance') }
+    def wanted = allNames.findAll { !it.startsWith('Signed distance') }
+    details.excluded_columns = later
+    saveDetectionMeasurements(partFile.getPath(), wanted as String[])
     def header = headerOf(partFile)
     details.columns = header.size()
     details.header_sample = header.take(12)
+    def leaked = header.findAll { it.startsWith('Signed distance') }
     // rows are counted by v3ctl.py post (DuckDB), which reads the whole file anyway
-    ok = partFile.length() > 0 && header.contains('Object ID')
-    message = ok ? "${header.size()} columns" : "no 'Object ID' column in ${header.take(8)}"
+    ok = partFile.length() > 0 && header.contains('Object ID') && leaked.isEmpty()
+    message = ok ? "${header.size()} columns (${later.size()} signed-distance columns left to the context export)" :
+            (leaked ? "signed-distance columns in the cells export: ${leaked}" : "no 'Object ID' column in ${header.take(8)}")
 } else if (mode == 'context') {
     def distanceCols = qupath.lib.objects.PathObjectTools.getAvailableFeatures(detections)
             .findAll { it.startsWith('Signed distance') }.sort()

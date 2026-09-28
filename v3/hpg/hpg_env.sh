@@ -14,9 +14,16 @@ export V3_QUPATH=$QUPATH_HOME/bin/QuPath
 export DJL_CACHE_DIR=$HOME/.djl.ai                               # PyTorch 2.7.1-cu128 engine, copied from the workstation
 export PY=${PY:-$BLUE/venv-v3/bin/python}                        # v3ctl.py needs only python3; post hooks need duckdb+pyarrow
 
-# run_v3.sh working areas: locks node-local (flock is not trusted across nodes on shared filesystems),
-# the rest on /blue so a failed job can be inspected.
+# Provenance site: every node of this cluster writes results/v3/provenance/<tag>/hpg/, so records
+# synced from the workstation (<tag>/<workstation>/) are never overwritten; they count here only after
+# `run_v3.sh --merge-provenance --images ...` adopted them (and the workstation merges ours likewise).
+export V3_SITE=hpg
+
+# run_v3.sh working areas. flock is node-local on a cluster filesystem, so image locks ALSO use mkdir
+# on /blue (V3_SHARED_LOCKDIR): two jobs on different nodes can never process one image at once. A lock
+# left by a killed job is broken once squeue no longer lists that job.
 export V3_LOCKDIR=${TMPDIR:-/tmp}/v3_locks
+export V3_SHARED_LOCKDIR=$BLUE/locks
 export V3_WORKROOT=$BLUE/work/driver
 export V3_TMP=$BLUE/tmp/run_v3
 
@@ -27,9 +34,49 @@ RUN_V3_HPG_OPTS=(--allow-busy --root-path "$BLUE" --min-root-free-gb 200 --data-
 
 hpg_log() { printf '%s [%s] %s\n' "$(date -Is)" "${SLURM_JOB_ID:-login}" "$*" >&2; }
 
-# image name for this array task: line (SLURM_ARRAY_TASK_ID + 1) of IMAGES_FILE (one image name per line)
+# the image lines of an images file: blank lines and '#' comments do not count (hpg_submit.sh writes
+# normalized files, but the count and the lookup must agree on any file)
+hpg_image_lines() { grep -v -E '^[[:space:]]*(#|$)' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
+
+# image name for this array task: image line (SLURM_ARRAY_TASK_ID + 1) of IMAGES_FILE
 hpg_image_for_task() {
     local n=$((${SLURM_ARRAY_TASK_ID:-0} + 1))
     [[ -s ${IMAGES_FILE:-} ]] || { hpg_log "IMAGES_FILE not set or empty"; return 1; }
-    sed -n "${n}p" "$IMAGES_FILE"
+    hpg_image_lines "$IMAGES_FILE" | sed -n "${n}p"
+}
+
+# SLURM durations: [D-]HH:MM:SS, MM:SS or SS -> seconds (fails on UNLIMITED/INVALID/NOT_SET)
+hpg_duration_s() {
+    local s=$1 d=0 h=0 m=0 x=0
+    local -a p
+    [[ $s =~ ^([0-9]+)-(.*)$ ]] && { d=${BASH_REMATCH[1]}; s=${BASH_REMATCH[2]}; }
+    [[ $s =~ ^[0-9]+(:[0-9]+){0,2}$ ]] || return 1
+    IFS=: read -r -a p <<< "$s"
+    case ${#p[@]} in
+        3) h=${p[0]} m=${p[1]} x=${p[2]} ;;
+        2) m=${p[0]} x=${p[1]} ;;
+        1) x=${p[0]} ;;
+    esac
+    echo $((10#$d * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$x))
+}
+
+# Refuse to start a job whose time limit cannot cover its steps: SLURM kills at the limit, and a step
+# killed mid-save leaves data.qpdata half-written (.bkp behind). Needs: sum of the step timeouts in
+# steps.tsv + a margin (v3ctl.py budget, the same numbers hpg_submit.sh uses for --time). Exports
+# V3_DEADLINE_EPOCH, after which run_v3.sh starts no step and the footer starts no save.
+#   hpg_check_budget --steps 0 | --passes R,J    [--margin-min N]
+hpg_check_budget() {
+    local need_min left_raw left_s
+    need_min=$("$PY" "$V3DIR/v3ctl.py" budget "$@") || { hpg_log "budget: v3ctl.py budget $* failed"; exit 2; }
+    left_raw=$(squeue -h -j "${SLURM_JOB_ID:?not inside a SLURM job}" -o %L 2> /dev/null | head -1 | tr -d '[:space:]')
+    if ! left_s=$(hpg_duration_s "$left_raw"); then
+        hpg_log "cannot read this job's time left ('$left_raw'); no deadline is enforced for the footer"
+        return 0
+    fi
+    export V3_DEADLINE_EPOCH=$(($(date +%s) + left_s))
+    if ((left_s < need_min * 60)); then
+        hpg_log "time limit too short: ${left_s}s left, the steps need ${need_min} min (timeouts + margin); submit with hpg_submit.sh or a larger --time"
+        exit 2
+    fi
+    hpg_log "time budget ok: ${left_s}s left >= ${need_min} min; job deadline $(date -d "@$V3_DEADLINE_EPOCH" -Is)"
 }

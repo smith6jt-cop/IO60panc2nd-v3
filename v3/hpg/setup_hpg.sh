@@ -98,7 +98,7 @@ else
 fi
 
 echo "== working areas"
-for d in "$BLUE/work/driver" "$BLUE/tmp/run_v3" "$BLUE/logs"; do
+for d in "$BLUE/work/driver" "$BLUE/tmp/run_v3" "$BLUE/logs" "$BLUE/locks" "$BLUE/work/submit/jobs"; do
     if [[ -d $d ]]; then ok "$d"; else fix "$d" mkdir -p "$d"; fi
 done
 
@@ -107,5 +107,6 @@ if ((problems)); then
     echo "$problems problem(s) -- fix them before submitting"
     exit 1
 fi
-echo 'layout ok. Before every submission sync results/v3/provenance/ from the workstation: run_v3.sh blocks'
-echo 'step 0 without the preflight record, and pass J without the pass I/C records.'
+echo "layout ok (provenance site: $V3_SITE). Before every submission sync data/<id>/ and results/v3/provenance/"
+echo 'from the workstation, then adopt its records: run_v3.sh --merge-provenance --images-file <file>.'
+echo 'Until then run_v3.sh (and hpg_submit.sh) block those images as unmerged.'
