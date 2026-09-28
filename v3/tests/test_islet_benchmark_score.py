@@ -27,7 +27,7 @@ import islet_benchmark_score as ibs
 
 def test_mean_caliper_diameter_rectangle():
     rect = box(0, 0, 20, 10)  # 20 x 10 pixel rectangle
-    # min Feret 10, max Feret = the diagonal sqrt(500): QuPath's Min/Max diameter
+    # QuPath: Min diameter 10 (caliper width), Max diameter = bounding circle = diagonal sqrt(500)
     assert ibs.mean_caliper_diameter_um(rect, pixel_size_um=1.0) == pytest.approx((10 + 500 ** 0.5) / 2)
 
 
@@ -370,13 +370,18 @@ def test_sweep_ranks_by_macro_f1(tmp_path):
     assert ranking.iloc[0]["macro_f1"] >= ranking.iloc[1]["macro_f1"]
 
 
-def test_feret_diameters_match_qupath_definitions():
-    """Max Feret is the hull's longest chord; min Feret the narrowest caliper width."""
+def test_diameters_match_qupath_definitions():
+    """Max = minimum bounding circle diameter, Min = minimum caliper width (QuPath 0.7)."""
     from shapely.geometry import Polygon
 
-    tri = Polygon([(0, 0), (10, 0), (0, 10)])          # right isosceles triangle
-    mn, mx = ibs.feret_diameters(tri)
-    assert mx == pytest.approx(200 ** 0.5)              # the hypotenuse
+    tri = Polygon([(0, 0), (10, 0), (0, 10)])          # right isosceles: circle on the hypotenuse
+    mn, mx = ibs.qupath_diameters(tri)
+    assert mx == pytest.approx(200 ** 0.5)
     assert mn == pytest.approx(200 ** 0.5 / 2)          # height onto the hypotenuse
+    h = 3 ** 0.5 / 2 * 10
+    equi = Polygon([(0, 0), (10, 0), (5, h)])           # equilateral, side 10
+    mn, mx = ibs.qupath_diameters(equi)
+    assert mx == pytest.approx(20 / 3 ** 0.5)           # circumcircle, not the side length
+    assert mn == pytest.approx(h)
     concave = Polygon([(0, 0), (10, 0), (10, 10), (5, 2), (0, 10)])   # hull is the square
-    assert ibs.feret_diameters(concave) == pytest.approx((10.0, 200 ** 0.5))
+    assert ibs.qupath_diameters(concave) == pytest.approx((10.0, 200 ** 0.5))

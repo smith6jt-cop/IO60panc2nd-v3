@@ -38,31 +38,30 @@ STRATUM_DIMENSIONS = ("stain_group", "disease_status", "size_class", "tile_kind"
 # --------------------------------------------------------------------------
 
 
-def feret_diameters(geom: BaseGeometry) -> tuple[float, float]:
-    """``(min, max)`` Feret (caliper) diameters of ``geom``, in its own units (pixels here).
+def qupath_diameters(geom: BaseGeometry) -> tuple[float, float]:
+    """``(min, max)`` diameters of ``geom`` exactly as QuPath 0.7 measures "Min diameter" and
+    "Max diameter", in the geometry's own units (pixels here).
 
-    These are QuPath's "Min diameter" and "Max diameter" shape measurements, which Drotar et al.
-    2025 averaged to classify endocrine objects, so truth, prediction and the QuPath detector
-    all use one definition:
+    Drotar et al. 2025 averaged QuPath's exported Min and Max diameter, and the v3 detector
+    classifies with the same QuPath measurements, so the scorer must use QuPath's definitions
+    (read from the 0.7 bytecode), not the textbook Feret ones:
 
-    * max Feret: the largest distance between any two convex-hull vertices;
-    * min Feret: the smallest caliper width, i.e. over every hull edge, the largest
-      perpendicular distance of a hull vertex from that edge's line, minimised (rotating calipers).
-
-    For a 20 x 10 rectangle that is (10, sqrt(500) ~ 22.36): the long caliper is the diagonal,
-    not the long side, so a minimum-rotated-rectangle side length would under-state it.
+    * Max diameter = the diameter of the MINIMUM BOUNDING CIRCLE (2 x its radius). For
+      rectangles and right triangles this equals the longest chord; for other shapes it is
+      larger (an equilateral triangle: 2/sqrt(3) x its side).
+    * Min diameter = the minimum caliper width (JTS MinimumDiameter): over every convex-hull
+      edge, the largest perpendicular distance of a hull vertex from that edge's line, minimised.
     """
+    import shapely
+
     hull = geom.convex_hull
     if hull.is_empty or hull.geom_type == "Point":
         return (0.0, 0.0)
+    max_d = 2.0 * float(shapely.minimum_bounding_radius(geom))
     if hull.geom_type == "LineString":
-        pts = np.asarray(hull.coords, dtype=float)
-        diff = pts[:, None, :] - pts[None, :, :]
-        return (0.0, float(np.sqrt((diff ** 2).sum(-1)).max()))
+        return (0.0, max_d)
     pts = np.asarray(hull.exterior.coords, dtype=float)[:-1]
-    diff = pts[:, None, :] - pts[None, :, :]
-    max_feret = float(np.sqrt((diff ** 2).sum(-1)).max())
-    min_feret = np.inf
+    min_w = np.inf
     n = len(pts)
     for i in range(n):
         edge = pts[(i + 1) % n] - pts[i]
@@ -71,14 +70,14 @@ def feret_diameters(geom: BaseGeometry) -> tuple[float, float]:
             continue
         rel = pts - pts[i]
         width = float(np.abs(edge[0] * rel[:, 1] - edge[1] * rel[:, 0]).max() / length)
-        min_feret = min(min_feret, width)
-    return (float(min_feret) if np.isfinite(min_feret) else 0.0, max_feret)
+        min_w = min(min_w, width)
+    return (float(min_w) if np.isfinite(min_w) else 0.0, max_d)
 
 
 def mean_caliper_diameter_um(geom: BaseGeometry, pixel_size_um: float) -> float:
-    """Drotar 2025 mean diameter: the mean of the min and max Feret diameters, in micrometres."""
-    min_feret, max_feret = feret_diameters(geom)
-    return ((min_feret + max_feret) / 2.0) * pixel_size_um
+    """Drotar 2025 mean diameter: the mean of QuPath's Min and Max diameter, in micrometres."""
+    min_d, max_d = qupath_diameters(geom)
+    return ((min_d + max_d) / 2.0) * pixel_size_um
 
 
 def area_equivalent_diameter_um(geom: BaseGeometry, pixel_size_um: float) -> float:
