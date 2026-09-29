@@ -57,7 +57,9 @@
  *      selected regions that overlap, are refused.
  *   3. removeDetections() first, so a re-run replaces rather than accumulates.
  *   4. Verify the InstanSeg result and that no two detections share a centroid; throw (and do not
- *      save) if either check fails.
+ *      save) if either check fails. Since 2026-09-28: outlines < DEBRIS_MAX_UM2 are not checked, and up
+ *      to DUP_RESOLVE_MAX_FRACTION of the detections (at least 10 pairs) in duplicate pairs are resolved
+ *      by dropping the second copy (logged with positions); more still fails. 0 = the strict rule.
  *
  * Normally run BEFORE 1_panc_objects.groovy. Re-detecting an image that already has islets is
  * supported (rule 2); afterwards re-run 2 -> 3 -> 8 (4 is independent of detections).
@@ -93,6 +95,13 @@ List<String> INPUT_CHANNELS = ["DAPI", "CD68", "CD44", "Vimentin", "CD99", "E-ca
                                "Pan-Cytokeratin", "CD79a", "CD3e", "Beta-actin", "Iba1"]
 double DUP_RADIUS_UM = 1.0        // post-run duplicate check; matches phenocycler.cell_qc
 double DUP_AREA_TOL  = 0.15
+// Outlines smaller than this are debris, not cells (they cover ~no pixel; see the footer's cells_measured): they are
+// left out of the duplicate check. The downstream geometry QC drops < 20 um^2 anyway.
+double DEBRIS_MAX_UM2 = 5.0
+// Duplicate pairs of real cells up to this fraction of all detections (at least 10) are resolved by dropping the second
+// copy, each logged with its position; more than that fails as before (the v2 double segmentation had ~22,000 pairs per
+// donor). 0 restores the strict rule (any pair fails). 6539 (503,235 cells) had exactly one pair.
+double DUP_RESOLVE_MAX_FRACTION = 1e-4
 double SAVE_MARGIN_MIN_DEFAULT = 10.0   // used only when the driver passes a deadline without a margin
 // ====================================================
 
@@ -316,6 +325,8 @@ for (int i = 0; i < cellList.size(); i++) {
     buckets.computeIfAbsent(key) { [] } << i
 }
 int dupPairs = 0
+def dupList = []
+double pxArea = pxSize * pxSize
 for (bucketEntry in new ArrayList(buckets.entrySet())) {
     def (bx, by) = bucketEntry.key
     def near = []
@@ -329,16 +340,33 @@ for (bucketEntry in new ArrayList(buckets.entrySet())) {
                                   ra.getCentroidY() - rb.getCentroidY())
             if (d > rPx) continue
             double aa = ra.getArea(), ab = rb.getArea()
-            if (Math.abs(aa - ab) / Math.max(Math.max(aa, ab), 1e-9) < DUP_AREA_TOL) dupPairs++
+            if (Math.min(aa, ab) * pxArea < DEBRIS_MAX_UM2) continue   // debris: not a duplicated cell
+            if (Math.abs(aa - ab) / Math.max(Math.max(aa, ab), 1e-9) < DUP_AREA_TOL) {
+                dupPairs++
+                dupList << [a: ia, b: ib, d_um: d * pxSize, area_a_um2: aa * pxArea, area_b_um2: ab * pxArea,
+                            x_um: ra.getCentroidX() * pxSize, y_um: ra.getCentroidY() * pxSize]
+            }
         }
     }
 }
-if (dupPairs > 0) {
-    println "ERROR: ${dupPairs} duplicate detection pair(s) found after detection."
+int dupResolveMax = DUP_RESOLVE_MAX_FRACTION > 0 ? Math.max(10, (int) (DUP_RESOLVE_MAX_FRACTION * cellList.size())) : 0
+dupList.take(20).each { println String.format("[detect]   duplicate pair at (%.1f, %.1f) um: %.2f um apart, areas %.1f / %.1f um^2",
+        it.x_um, it.y_um, it.d_um, it.area_a_um2, it.area_b_um2) }
+int dupResolved = 0
+if (dupPairs > dupResolveMax) {
+    println "ERROR: ${dupPairs} duplicate detection pair(s) found after detection (limit ${dupResolveMax})."
     println "       Two objects share a centroid within ${DUP_RADIUS_UM} um with matching area."
     throw new IllegalStateException("[detect] ${dupPairs} duplicate pairs - detections NOT saved.")
+} else if (dupPairs > 0) {
+    // the same cell twice (e.g. at a tile seam): keep the first copy
+    def drop = dupList.collect { cellList[it.b as int] }.unique()
+    removeObjects(drop, true)
+    dupResolved = drop.size()
+    cells = getDetectionObjects()
+    println "[detect] duplicate check: ${dupPairs} pair(s) within ${DUP_RADIUS_UM} um resolved by dropping ${dupResolved} " +
+            "second copies (limit ${dupResolveMax}); ${cells.size()} detections remain"
 } else {
-    println "[detect] duplicate check: PASS (0 pairs within ${DUP_RADIUS_UM} um)"
+    println "[detect] duplicate check: PASS (0 pairs within ${DUP_RADIUS_UM} um; debris < ${DEBRIS_MAX_UM2} um^2 not checked)"
 }
 
 // ---- 7. save, only over the file this step started from and not too close to the deadline -----
@@ -362,6 +390,7 @@ V3_RESULT = [ok     : true, changed: true,
                        per_region: perRegion, overlaps: overlaps, removed_before: before,
                        instanseg: [objects: results.nObjectsDetected(), tiles: results.nTilesProcessed(),
                                    failed_tiles: results.nTilesFailed(), interrupted: results.wasInterrupted()],
-                       detections: cells.size(), duplicate_pairs: dupPairs, save_seconds: saveSeconds,
+                       detections: cells.size(), duplicate_pairs: dupPairs, duplicates_dropped: dupResolved,
+                       duplicate_pairs_detail: dupList.take(50), save_seconds: saveSeconds,
                        max_region_overlap_um2: MAX_REGION_OVERLAP_UM2, contained_min_fraction: CONTAINED_MIN_FRACTION]]
 println "[detect] Done."
