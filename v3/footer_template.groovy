@@ -138,8 +138,11 @@ try {
         __v3_check.details = [classes: __v3_bc, cores: __v3_cores.size(), bands: __v3_bands.size(),
                               cores_without_uid: __v3_noUid, duplicate_uids: __v3_dupUid, orphan_bands: __v3_orphan]
         // no Islet-class objects and no bands is legitimate (v3: a T1D image may hold only clusters/singles)
+        // bands=none (v3 default since 2026-09-29, peri-islet regions dropped): no band may exist at all
+        String __v3_bmode = ((__v3_params.bands ?: ['required'])[0]) as String
+        __v3_check.details.bands_mode = __v3_bmode
         __v3_check.pass = __v3_noUid == 0 && __v3_dupUid == 0 && __v3_orphan == 0 &&
-                (__v3_cores.size() > 0) == (__v3_bands.size() > 0)
+                (__v3_bmode == 'none' ? __v3_bands.isEmpty() : (__v3_cores.size() > 0) == (__v3_bands.size() > 0))
         __v3_check.message = "${__v3_cores.size()} cores (${__v3_noUid} without UID, ${__v3_dupUid} duplicate UIDs), " +
                 "${__v3_bands.size()} bands (${__v3_orphan} orphan)"
     } else if (__v3_pc == 'cells_measured') {
