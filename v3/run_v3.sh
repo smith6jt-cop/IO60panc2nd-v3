@@ -18,8 +18,10 @@
 #   - a per-image flock means two steps never touch one image at once (plus a mkdir lock in
 #     V3_SHARED_LOCKDIR across cluster nodes); lane slots (gpu/cpu/light) and a memory budget cap
 #     concurrency; QuPath inherits the lock fds, so an orphaned QuPath still holds its image;
-#   - free-space guard before every step; refuses to start while QuPath (GUI or headless) or a
-#     Senior rebuild runs (lib.sh assert_project_idle), and stops starting steps if a GUI appears;
+#   - free-space guard before every step; refuses to start while a Senior rebuild runs or a headless
+#     QuPath outside this driver has this project open. A QuPath GUI stops nothing by being open: an
+#     image waits only while a GUI holds its pixel file or anything in its data/<id>/ open (the user
+#     viewing or editing THAT image); a GUI on another project, or on other images, is ignored;
 #   - a step whose provenance passed and was validated, whose outputs exist, whose script is still the
 #     one the plan resolves, and whose upstream steps did not re-run (and no accepted external edit
 #     came) after it is skipped; if data.qpdata changed outside run_v3 the image is blocked until
@@ -44,7 +46,8 @@
 #     --save-margin-min N  no save starts later than N minutes before a step's deadline (default 10)
 #     --script-set v3|orig|auto   v3 (default) requires the v3 copy of every step that has one
 #     --script STEP=PATH   run PATH instead (testing);  --heap STEP=GB;  --override STEP:NAME=VALUE
-#     --allow-busy         run although QuPath/a rebuild is running (forces --lanes-cpu 1)
+#     --allow-busy         run despite a Senior rebuild or an outside headless QuPath on this project, and
+#                          ignore GUIs holding images open (forces --lanes-cpu 1)
 #     --allow-drift        do not block an image whose step changed its server metadata
 #     --accept-external --note TEXT [--rerun-from S]   record the current data.qpdata of --images as accepted
 #     --merge-provenance [--from SITE] [--check]      adopt the records another site wrote for --images
@@ -54,6 +57,9 @@
 # (mkdir image locks on a shared filesystem), V3_DEADLINE_EPOCH (a job's end: no step saves after it),
 # V3_WORKROOT, V3_TMP, V3_QUPATH, PY.
 set -euo pipefail
+# Under memory pressure the kernel kills this batch driver's QuPath steps first, never the user's
+# interactive apps (QuPath GUI, desktop): every child inherits the score. V3_OOM_SCORE_ADJ overrides it.
+echo "${V3_OOM_SCORE_ADJ:-1000}" > /proc/self/oom_score_adj 2> /dev/null || true
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
 source "$HERE/lib.sh"            # PROJ V3 SCRATCH QUPATH assert_project_idle
@@ -125,27 +131,55 @@ say() { printf '%s %s\n' "$(date +%T)" "$*" | tee -a "$DRIVER_LOG"; }
 log() { say "$*"; }                                    # lib.sh's assert_project_idle reports through these
 die() { say "FATAL: $*"; exit 1; }
 
-# Real QuPath JVMs (GUI or headless) and Senior rebuild processes, matched by process name. lib.sh's
-# assert_project_idle greps whole command lines, so it also flags shells (e.g. `bash -c "... QuPath ..."`
-# wrappers of other sessions) that merely mention QuPath; this narrower list decides.
-busy_procs() {
-    ps -eo pid=,comm=,args= | awk '$2 == "QuPath" || ($2 == "java" && /qupath\.QuPath/) ||
-        ($2 ~ /^(python[0-9.]*|make)$/ && /build_layers|make rebuild|refine\.py/)'
+# What blocks this driver, matched by process name (comm), never by a mention in some shell's arguments:
+#   - at start: a Senior rebuild (it reads what this driver writes), or a headless QuPath OUTSIDE this
+#     driver with THIS project file on its command line;
+#   - per image, before each step: a QuPath GUI holding that image's pixel file, or anything in its
+#     data/<id>/, open -- QuPath keeps the pixel file of every image it shows (or caches) open.
+# A GUI on another project, or on other images of this one, blocks nothing. Headless runs of other
+# run_v3 instances use private project copies and are serialised by the per-image locks.
+gui_pids() {   # QuPath GUIs (not headless 'script' runs)
+    ps -eo pid=,comm=,args= | awk '($2 == "QuPath" || ($2 == "java" && /qupath\.QuPath/)) && !/ script / {print $1}'
 }
-gui_open() {   # a QuPath GUI (not a headless 'script' run) could be editing any image
+declare -A IMG_DATA=()   # tag -> its data/<entry id> directory, filled from the plan
+image_source() {   # data dir -> real path of the image's pixel file (server.json "uri"), or nothing
+    local uri
+    uri=$(grep -o '"uri"[[:space:]]*:[[:space:]]*"file:[^"]*"' "$1/server.json" 2>/dev/null | head -n 1) || true
+    uri=${uri#*\"file:}; uri=${uri%\"}
+    [[ $uri == //* ]] && uri=${uri#//}
+    if [[ -n $uri ]]; then realpath -e -- "$(printf '%b' "${uri//%/\\x}")" 2>/dev/null || true; fi
+}
+gui_holds_image() {   # tag -> 0 if a QuPath GUI has this image's pixel file or data/<id>/ open
     ((ALLOW_BUSY)) && return 1
-    ps -eo pid=,comm=,args= | awk '($2 == "QuPath" || ($2 == "java" && /qupath\.QuPath/)) && !/ script /' | grep -q .
+    local dat=${IMG_DATA[$1]:-} src pid fd f
+    [[ -n $dat ]] || return 1
+    src=$(image_source "$dat")
+    dat=$(realpath -e -- "$dat" 2>/dev/null) || return 1
+    for pid in $(gui_pids); do
+        for fd in /proc/"$pid"/fd/*; do
+            f=$(readlink -- "$fd" 2>/dev/null) || continue
+            [[ -n $src && $f == "$src" ]] && return 0
+            [[ $f == "$dat"/* ]] && return 0
+        done
+    done
+    return 1
 }
-project_idle() {   # 0 = idle. assert_project_idle first; if it objects, only real processes count.
-    (assert_project_idle) > /dev/null 2>&1 && return 0
+busy_procs() {   # a Senior rebuild, or a headless QuPath outside this driver on this project file
+    local proj
+    proj=$(realpath -e -- "$PROJECT" 2>/dev/null || echo "$PROJECT")
+    ps -eo pid=,comm=,args= | awk -v p="$proj" '
+        ($2 ~ /^(python[0-9.]*|make)$/ && /build_layers|make rebuild|refine\.py/) ||
+        (($2 == "QuPath" || ($2 == "java" && /qupath\.QuPath/)) && / script / && index($0, p) > 0)'
+}
+project_idle() {   # 0 = idle
     local real
     real=$(busy_procs)
-    if [[ -z $real ]]; then
-        echo 'note: assert_project_idle matched only processes that mention QuPath/rebuild in their arguments (shell wrappers); no QuPath or rebuild process is running' >&2
-        return 0
+    if [[ -n $real ]]; then
+        printf '%s\n' "$real" | cut -c1-200 | sed 's/^/  busy: /' >&2
+        return 1
     fi
-    printf '%s\n' "$real" | cut -c1-200 | sed 's/^/  busy: /' >&2
-    return 1
+    [[ -z $(gui_pids) ]] || echo 'note: a QuPath GUI is open; only an image it holds open waits' >&2
+    return 0
 }
 
 IMG_OPTS=()
@@ -198,10 +232,10 @@ fi
 # ---- refuse to start while something else could write the project ------------------------------
 if ! project_idle; then
     if ((ALLOW_BUSY)); then
-        echo 'WARNING: QuPath or a Senior rebuild is running; --allow-busy given, so continuing with one CPU lane.' >&2
+        echo 'WARNING: a Senior rebuild or an outside headless QuPath on this project is running; --allow-busy given, so continuing with one CPU lane.' >&2
         LANES_CPU=1
     else
-        echo 'refusing to start (close QuPath / wait for the rebuild, or pass --allow-busy)' >&2
+        echo 'refusing to start (wait for the rebuild / the other QuPath run on this project, or pass --allow-busy)' >&2
         exit 3
     fi
 fi
@@ -269,7 +303,10 @@ run_step() {   # name tag step lane heap threads timeout_min post  -> 0 pass, 1 
     local logf=$OUT/logs/run_v3/$tag/$step.log worker prepf preperr msg rc=0 frc=0 t0 wall resv deadline now line key
     mkdir -p "${logf%/*}" "$RUNDIR/$tag"
     if stop_requested; then runlog "$tag" "$step" stop STOPPED 'run stop requested earlier'; return 3; fi
-    if gui_open; then request_stop 'a QuPath GUI is open'; runlog "$tag" "$step" stop STOPPED 'QuPath GUI open'; return 3; fi
+    if gui_holds_image "$tag"; then
+        runlog "$tag" "$step" stop STOPPED 'open in a QuPath GUI (this image waits; run again once it is closed)'
+        return 3
+    fi
     if ! msg=$(ctl diskcheck --image "$tag" "${DISK_OPTS[@]}" 2>&1); then
         request_stop "free-space guard before $tag/$step: $msg"
         runlog "$tag" "$step" stop STOPPED "$msg"
@@ -389,7 +426,8 @@ run_image() {   # name tag  (runs in its own background subshell)
                 if [[ ${F[4]} != ok && ${F[4]} != fresh ]]; then
                     echo "BLOCKED (${F[4]})" > "$status"; say "$tag: BLOCKED: ${F[5]:-}"
                     runlog "$tag" - plan BLOCKED "${F[4]}: ${F[5]:-}"; return 0
-                fi ;;
+                fi
+                IMG_DATA[$tag]=$(dirname -- "$PROJECT")/data/${F[3]} ;;
             STEP)       # STEP tag step action lane heap threads timeout post script reason
                 IFS=$'\t' read -r _ _ step action lane heap threads tmo post _ reason <<< "$line"
                 case $action in
