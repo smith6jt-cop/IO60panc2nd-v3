@@ -288,6 +288,32 @@ V3_SITE=siteA "$R" --project "$SPJ" --merge-provenance --images "$TAG" > "$LOGS/
 V3_SITE=siteA runp "$SPJ" t-siteA-J2 --pass J
 check 'site A: after merging, pass J runs on the file site B left' test "$RC" = 0 -a -n "$(status_is t-siteA-J2 DONE && echo y)"
 
+echo '== 20. a QuPath GUI makes only an image it holds open wait (no --allow-busy)'
+# A stand-in GUI: sleep copied to a file named QuPath (so ps reports comm "QuPath", no " script "),
+# started with one file open on fd 3 -- the way QuPath holds the pixel file of an image it shows.
+FG=$LOGS/fakegui; mkdir -p "$FG"; cp /bin/sleep "$FG/QuPath"
+gui_on() { ( exec 3< "$1"; exec "$FG/QuPath" 600 ) & FGPID=$!; sleep 1; }
+gui_off() { kill "$FGPID" 2> /dev/null; wait "$FGPID" 2> /dev/null; }
+SRC=$("$PY" -c "import json, sys, urllib.parse; u = json.load(open(sys.argv[1]))['uri']; p = urllib.parse.unquote(u.split(':', 1)[1]); print(p[2:] if p.startswith('///') else p)" "$FIXDIR/data/1/server.json")
+SAVED_EXTRA=("${EXTRA[@]}"); EXTRA=()
+echo 'unrelated' > "$LOGS/unrelated.txt"
+gui_on "$LOGS/unrelated.txt"
+run t-gui-other --pass I --force 4
+check 'a GUI holding another file: step 4 runs' test "$RC" = 0 -a "$(rows t-gui-other PASS)" -ge 1 -a "$(rows t-gui-other STOPPED)" = 0
+gui_off
+gui_on "$SRC"
+run t-gui-img --pass I --force 4
+check 'a GUI holding the pixel file: that image waits' test "$(rows t-gui-img STOPPED)" = 1 -a "$(rows t-gui-img PASS)" = 0
+check 'the wait is reported as the GUI holding the image' grep -q 'open in a QuPath GUI' "$LOGS/t-gui-img.out"
+gui_off
+gui_on "$QP"
+run t-gui-data --pass I --force 4
+check 'a GUI holding a file in data/<id>/: that image waits' test "$(rows t-gui-data STOPPED)" = 1 -a "$(rows t-gui-data PASS)" = 0
+gui_off
+run t-gui-after --pass I --force 4
+check 'the GUI gone: the image runs' test "$RC" = 0 -a "$(rows t-gui-after PASS)" -ge 1
+EXTRA=("${SAVED_EXTRA[@]}")
+
 echo
 echo "== per-step timings of the full run (t-full):"
 "$PY" - "$OUT/run_log.csv" <<'EOF'
