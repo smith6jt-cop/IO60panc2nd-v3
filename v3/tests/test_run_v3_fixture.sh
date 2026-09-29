@@ -56,12 +56,15 @@ FAILS=0
 # run_v3.sh refuse to start; the fixture is private, so the tests may pass --allow-busy.
 EXTRA=()
 [[ ${TEST_ALLOW_BUSY:-0} == 1 ]] && EXTRA=(--allow-busy)
+S4V3=$(cd "$(dirname "${BASH_SOURCE[0]}")/../qupath" && pwd)/4_islet_expander_v3.groovy
 
 check() { local d=$1; shift; if "$@"; then printf '  PASS  %s\n' "$d"; else printf '  FAIL  %s\n' "$d"; FAILS=$((FAILS + 1)); fi; }
 show() { grep -E ' (start|PASS|FAIL|BLOCKED|LOCKED|STOP|DRIFT|post )| DONE| FAILED|refus|images:|matches|not among' "$1" | grep -v '^== ' | sed 's/^/      /' | head -40; }
 runp() {   # runp <project file> <id> <args...> ; sets RC
     local proj=$1 id=$2; shift 2
-    "$R" --project "$proj" --script-set orig --run-id "$id" "${EXTRA[@]}" "$@" > "$LOGS/$id.out" 2>&1
+    # step 4 always runs the v3 copy: the orig script draws peri-islet bands, which v3 dropped (2026-09-29) and the
+    # step's footer check now forbids (islet_bands bands=none). A test's own --script 4=... comes later and wins.
+    "$R" --project "$proj" --script-set orig --script "4=$S4V3" --run-id "$id" "${EXTRA[@]}" "$@" > "$LOGS/$id.out" 2>&1
     RC=$?
     printf '\n[%s] exit %s: run_v3.sh %s\n' "$id" "$RC" "$*"
     show "$LOGS/$id.out"
