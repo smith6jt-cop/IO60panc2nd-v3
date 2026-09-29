@@ -87,9 +87,7 @@ Runtime (2026-09-28): all 24 images in 16.5 min (23 in 944 s + 6457 in 48 s; 21-
 
 ```bash
 /scratch/io60/venv-v3/bin/python scripts/v3/islet_anchors.py --all --skip-existing   # recomputes changed exports only
-/scratch/io60/venv-v3/bin/python scripts/v3/islet_anchors.py --images 6457_Scan1 \
-    --tissue-geojson results/Geojson/Tissue/Tissue__6457_Scan1.er.qptiff_-_resolution__1.geojson   # empty .qpdata
-/scratch/io60/venv-v3/bin/python -m pytest -q scripts/v3/tests/test_islet_anchors.py   # 34 tests, synthetic only
+/scratch/io60/venv-v3/bin/python -m pytest -q scripts/v3/tests/test_islet_anchors.py   # 35 tests, synthetic only
 ```
 
 ## 2. Detector (`qupath/1_panc_objects_v3.groovy`, `ISLET_METHOD='drotar_cd99'`)
@@ -317,8 +315,9 @@ on HDL112. **Singles co-positivity** removes all INS-only singles where INS is h
 - **Hormone-positive bridges are not guarded** (only CD99-only necks can be cut, and only with `NECK_SPLIT`).
 - **The occupied-tissue mask depends on DAPI** having an empty-space peak; on 9/24 images DAPI is unimodal and every
   tissue pixel counts as background.
-- **6457** has no Tissue in its `.qpdata`; its anchors come from `results/Geojson/Tissue/...`, and script 1 cannot run
-  on it until a Tissue annotation exists (its hash would not match anyway).
+- **6457**: its Tissue was imported into the `.qpdata` from `results/Geojson/Tissue/...` on 2026-09-28 and exported with
+  the others, so it runs like every image. Do NOT use `--tissue-geojson` with the old file: the polygons are the same,
+  but each ring starts at a different vertex, so its hash would not match script 1's (review 2026-09-29).
 - **Images still to be annotated** (6579's pLN; 6347 and 6580) need `export_annotations.sh` + `islet_anchors.py
   --skip-existing` after drawing: the anchor check refuses script 1 until then.
 - **pLN is disjoint from Tissue** in the four images that have one; the detector and bands exclude pLN either way.

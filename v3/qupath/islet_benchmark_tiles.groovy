@@ -392,12 +392,15 @@ if (!skip) {
 
     // ---- category pools ----
     def hormoneShare = { gr, double v -> (Double.isNaN(v) || Double.isNaN(gr.hormone as double) || (gr.hormone as double) <= 0) ? Double.NaN : v / (gr.hormone as double) }
+    def insShareIs = { gr, Closure test -> double sh = hormoneShare(gr, gr.ins as double); !Double.isNaN(sh) && test(sh) }
     def objCats = new LinkedHashMap([
             pos_islet_small    : { gr -> gr.cls == 'Islet' && gr.diam < 60 },
             pos_islet_medium   : { gr -> gr.cls == 'Islet' && gr.diam >= 60 && gr.diam < 120 },
             pos_islet_large    : { gr -> gr.cls == 'Islet' && gr.diam >= 120 },
-            pos_ins_rich       : { gr -> gr.cls in ['Islet', 'EndocrineCluster'] && hormoneShare(gr, gr.ins) >= 0.5 },
-            pos_ins_deficient  : { gr -> gr.cls in ['Islet', 'EndocrineCluster'] && hormoneShare(gr, gr.ins) < 0.05 },
+            // NaN (no hormone area: CD99-only or legacy-only groups) must match NEITHER: in dynamic Groovy
+            // `NaN >= 0.5` is true, which put CD99-only objects into pos_ins_rich (review 2026-09-29)
+            pos_ins_rich       : { gr -> gr.cls in ['Islet', 'EndocrineCluster'] && insShareIs(gr, { double v -> v >= 0.5 }) },
+            pos_ins_deficient  : { gr -> gr.cls in ['Islet', 'EndocrineCluster'] && insShareIs(gr, { double v -> v < 0.05 }) },
             pos_infiltrated    : { gr -> gr.cls == 'Islet' && (gr.immuneRing ?: 0) >= (P.INFILTRATED_MIN as double) },
             pos_cluster        : { gr -> gr.cls == 'EndocrineCluster' },
             pos_single         : { gr -> gr.cls == 'EndocrineSingle' },
@@ -434,6 +437,13 @@ if (!skip) {
         s.findAll { score(it) >= cut && score(it) > 0 }
     }
     double exoT = P.EXO_MIN_TISSUE as double, minT = P.MIN_TISSUE as double
+    // these negatives must hold no islet/cluster candidate AFTER the tile is jittered, not only on the grid
+    // (review 2026-09-29: 4 of 26 jittered negative tiles contained one)
+    def NO_IC_CATS = ['neg_exocrine', 'neg_exo_cd99', 'neg_speckle', 'neg_immune']
+    def hitsIC = { double x0, double y0 ->
+        def b = new Envelope(x0, x0 + tilePx, y0, y0 + tilePx)
+        gTree.query(b).any { gr -> gr.cls in ['Islet', 'EndocrineCluster'] && gr.env.intersects(b) }
+    }
     def exo = wins.findAll { it.tf >= exoT && it.nIC == 0 }
     pools.neg_exocrine = [kind: 'window', rule: "tissue >= ${exoT}, no islet/cluster candidate", items: exo]
     pools.neg_exo_cd99 = [kind: 'window', rule: "exocrine, top ${P.TOP_FRAC} by CD99+ single candidates", items: topPool(exo.findAll { it.nCd > 0 }, { it.nCd })]
@@ -481,7 +491,7 @@ if (!skip) {
             }
             double tf = frac(iT, x, y)
             boolean tissueOk = cat == 'neg_edge' ? (tf >= 0.3 && tf <= 0.7) : tf >= (cat in ['neg_exocrine', 'neg_exo_cd99', 'neg_speckle'] ? exoT : minT)
-            if (!tissueOk || !overlapOk(x, y)) { rejected++; continue }
+            if (!tissueOk || !overlapOk(x, y) || (cat in NO_IC_CATS && hitsIC(x, y))) { rejected++; continue }
             chosen << [x, y, cat, [target: target, target_sources: srcs, target_x: tx, target_y: ty, tissue_frac: tf]]
             got++
         }
