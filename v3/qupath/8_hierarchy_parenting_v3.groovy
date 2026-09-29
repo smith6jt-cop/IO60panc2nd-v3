@@ -6,7 +6,7 @@
  *           the detection centroid. v3 uses an EXPLICIT priority order; the first annotation that
  *           contains a detection's test point claims it:
  *
- *               Islet -> EndocrineCluster -> EndocrineSingle -> Artifact -> pLN -> IsletExpanded -> Tissue
+ *               Islet -> EndocrineCluster -> EndocrineSingle -> Artifact -> pLN -> Tissue   (no IsletExpanded, 2026-09-29)
  *
  *   - endocrine objects first, so a cluster or single lying inside an islet's band keeps its own cells (bands
  *     exist for Islets only; 4_islet_expander_v3.groovy); an endocrine object drawn over an Artifact keeps its
@@ -29,7 +29,8 @@ import qupath.lib.roi.GeometryTools
 evaluate(new File(buildFilePath(PROJECT_BASE_DIR, 'scripts', 'lib', 'common.groovy')))
 
 // ==================== PARAMETERS ====================
-List<String> PARENT_ORDER = ['Islet', 'EndocrineCluster', 'EndocrineSingle', 'Artifact', 'pLN', 'IsletExpanded', 'Tissue']
+// no IsletExpanded: peri-islet regions dropped (user, 2026-09-29); distances (script 3) carry that relation
+List<String> PARENT_ORDER = ['Islet', 'EndocrineCluster', 'EndocrineSingle', 'Artifact', 'pLN', 'Tissue']
 // true: test the NUCLEUS centroid (cells), the same point 3_signed_distance uses, so a cell parented
 // to an Islet always has a negative "Signed distance to annotation with Islet". false: whole-cell
 // centroid (what QuPath's own hierarchy resolution uses).

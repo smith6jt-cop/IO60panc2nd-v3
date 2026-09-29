@@ -1,7 +1,8 @@
 /*
  * 4_islet_expander_v3.groovy   (v3 copy of scripts/4_islet_expander.groovy; the original is unchanged)
  *
- * Generate non-overlapping IsletExpanded bands of width EXPAND_MARGIN_UM um around each Islet, split at the
+ * v3 (2026-09-29): bands are OFF by default (MAKE_BANDS = false; the user dropped peri-islet regions). With
+ * MAKE_BANDS = true: generate non-overlapping IsletExpanded bands of width EXPAND_MARGIN_UM um around each Islet, split at the
  * midline between adjacent islets via a densified-boundary Voronoi partition.
  *
  * v3 (1_panc_objects_v3.groovy, drotar_cd99) creates three endocrine classes by mean caliper diameter:
@@ -62,6 +63,10 @@ String CLASS_CLUSTER       = 'EndocrineCluster'
 String CLASS_SINGLE        = 'EndocrineSingle'
 double NEAREST_WINDOW_UM   = 3000.0    // Drotar: nearest islet among islets within +-3 mm
 String BAND_EXCLUDE_CLASSES = 'Artifact,pLN'   // bands are clipped to Tissue minus these classes
+// Peri-islet regions are DROPPED (user, 2026-09-29): no IsletExpanded bands by default. Spatial relations come from
+// the per-cell signed distances (script 3). true restores the 20 um Voronoi bands. Names, UIDs, nearest-islet
+// distances, Artifact overlap, the removal of old bands and the re-parenting of stray cells run either way.
+boolean MAKE_BANDS = false
 // ====================================================
 
 def server = getCurrentServer()
@@ -236,6 +241,10 @@ int nNoNeighbour = coresAll.count { Double.isNaN(it.getMeasurementList().get(kCe
 println String.format("[04v3] Nearest-islet distances for %d islets in %.1f s (%d without a neighbour within +-%.0f um)",
         coresAll.size(), (System.currentTimeMillis() - tN) / 1000.0, nNoNeighbour, NEAREST_WINDOW_UM)
 
+def newAnns = []
+if (!MAKE_BANDS) {
+    println "[04v3] MAKE_BANDS=false: no ${CLASS_ISLET_EXPANDED} bands (peri-islet regions dropped, 2026-09-29)"
+} else {
 println "[04v3] Building Voronoi partition..."
 long t0 = System.currentTimeMillis()
 
@@ -370,7 +379,6 @@ coresAll.parallelStream().forEach { core ->
 println String.format("[04v3] Band geometry complete in %.1f s (%d failures)",
         (System.currentTimeMillis() - t1) / 1000.0, failed.get())
 
-def newAnns = []
 coresAll.each { core ->
     def r = results.get(core)
     if (r == null) return
@@ -382,6 +390,7 @@ coresAll.each { core ->
     newAnns << ann
 }
 addObjects(newAnns)
+}   // MAKE_BANDS
 
 // Detections of the removed bands moved to the bands' parent, the root. Give them to the region containing their
 // nucleus centroid (Tissue first, then pLN: the test point script 8 uses); script 8 parents them into the new bands.

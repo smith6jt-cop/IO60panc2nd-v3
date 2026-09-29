@@ -16,9 +16,9 @@ panel 2, no ND donor; E4 metabolic 70-channel panel). The qptiff Responsivity da
 |---|---|
 | `islet_anchors.py` | per-image, per-channel background anchor + censored clamp model + annotation hash -> `results/v3/islet_anchors.csv` (tests: `tests/test_islet_anchors.py`) |
 | `qupath/1_panc_objects_v3.groovy` | the detector (`ISLET_METHOD='drotar_cd99'`, default) or the legacy `Islets2` baseline |
-| `qupath/4_islet_expander_v3.groovy` | names/UIDs, 20 um bands for Islets (clipped to Tissue minus Artifact/pLN), nearest-islet distances, `Artifact overlap um^2` |
+| `qupath/4_islet_expander_v3.groovy` | names/UIDs, nearest-islet distances, `Artifact overlap um^2`; **no bands by default** (`MAKE_BANDS = false`: peri-islet regions dropped, 2026-09-29) |
 | `qupath/3_signed_distance_v3.groovy` | signed distances; always writes Islet, EndocrineCluster, EndocrineSingle, Artifact, pLN, Tissue columns |
-| `qupath/8_hierarchy_parenting_v3.groovy` | parenting: Islet -> EndocrineCluster -> EndocrineSingle -> Artifact -> pLN -> IsletExpanded -> Tissue |
+| `qupath/8_hierarchy_parenting_v3.groovy` | parenting: Islet -> EndocrineCluster -> EndocrineSingle -> Artifact -> pLN -> Tissue |
 | `qupath/islet_benchmark_tiles.groovy` | blinded, quota-based benchmark tiles (design v2) + private key and predictions |
 | `qupath/islet_benchmark_report.py` | benchmark coverage (category x stratum, gaps) and the tile leak check |
 
@@ -140,14 +140,16 @@ methods never coexist.
 
 - **4:** two-pass stable UIDs per class; an object carrying another class's automatic name is renamed. **Keys of
   another class are removed** after a reclassification ('Islet: UID', 'Cluster: UID', 'Single: UID' only on their
-  own class, 'Islet: UID' also on bands; the nearest-islet distances only on Islets). 20 um Voronoi bands for
-  `Islet` only, **clipped to Tissue minus (Artifact and pLN)**. `Nearest islet centroid distance um` (Drotar,
+  own class; the nearest-islet distances only on Islets). **No peri-islet bands** (user, 2026-09-29: peri-islet
+  regions dropped entirely; the per-cell signed distances of script 3 carry that relation). `MAKE_BANDS = true`
+  restores 20 um Voronoi bands for `Islet` only, clipped to Tissue minus (Artifact and pLN), with 'Islet: UID' on
+  each band; old IsletExpanded bands are always removed. `Nearest islet centroid distance um` (Drotar,
   within +-3 mm) and `Nearest islet edge distance um`. **`Artifact overlap um^2`** on every Islet, cluster and single
   (area inside Artifact annotations; objects drawn or kept over an Artifact at review can be excluded downstream).
   Detections that the band removal left under the root are re-parented to Tissue/pLN.
 - **3:** unchanged; the six columns above always exist (NaN when a class is absent).
-- **8:** order **Islet -> EndocrineCluster -> EndocrineSingle -> Artifact -> pLN -> IsletExpanded -> Tissue**
-  (the nucleus centroid, as script 3): a band never claims cells of a fold or of the lymph node; an endocrine object
+- **8:** order **Islet -> EndocrineCluster -> EndocrineSingle -> Artifact -> pLN -> Tissue** (no IsletExpanded since
+  2026-09-29), tested at the nucleus centroid as in script 3; an endocrine object
   keeps its cells even over an Artifact (and carries `Artifact overlap um^2`).
 
 Fixture chain (2048^2 crop of 6450 with a pLN inside Tissue, 13,516 cells; `/scratch/io60/work/isletC2/fixture`):
