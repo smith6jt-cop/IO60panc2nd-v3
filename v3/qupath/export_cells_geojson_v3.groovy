@@ -14,6 +14,7 @@
  *     identity hashes are not unique, so two objects with equal hashes were never compared and a
  *     duplicate pair could hide. Now each cell has a unique list index and pairs use ia < ib.
  *   - duplicates are a failure (v3 script 0 guarantees none), not a warning followed by an export.
+ *     Outlines < DEBRIS_MAX_UM2 are left out, exactly as v3 script 0 leaves them out (2026-09-28).
  *   - the output is written to <path>.part, stream-verified (every detection UUID exactly once, no
  *     extra IDs) and only then renamed; the verdict goes to V3_RESULT for the run_v3 footer.
  *
@@ -27,6 +28,7 @@
 String DEFAULT_OUT_DIR = '/home/smith6jt/IO60panc2nd/Islet-Explorer-Senior/data/redsea_scratch/geojson'
 double DUP_RADIUS_UM = 1.0     // same rule as 0_cell_detection_panc.groovy and phenocycler.cell_qc
 double DUP_AREA_TOL  = 0.15
+double DEBRIS_MAX_UM2 = 5.0   // = v3 script 0: debris outlines (< 5 um^2) are not checked for duplicates
 boolean FAIL_ON_DUPLICATES = true
 // ====================================================
 
@@ -54,7 +56,8 @@ if (cells.isEmpty()) {
         def roi = cells[i].getROI()
         buckets.computeIfAbsent([(int) Math.floor(roi.getCentroidX() / rPx), (int) Math.floor(roi.getCentroidY() / rPx)]) { [] } << i
     }
-    long dupPairs = 0
+    double pxArea = pxSize * pxSize
+    long dupPairs = 0, debrisPairs = 0
     for (entry in new ArrayList(buckets.entrySet())) {
         int bx = entry.key[0], by = entry.key[1]
         def near = []
@@ -66,12 +69,16 @@ if (cells.isEmpty()) {
                 def rb = cells[ib].getROI()
                 if (Math.hypot(ra.getCentroidX() - rb.getCentroidX(), ra.getCentroidY() - rb.getCentroidY()) > rPx) continue
                 double aa = ra.getArea(), ab = rb.getArea()
-                if (Math.abs(aa - ab) / Math.max(Math.max(aa, ab), 1e-9) < DUP_AREA_TOL) dupPairs++
+                if (Math.abs(aa - ab) / Math.max(Math.max(aa, ab), 1e-9) < DUP_AREA_TOL) {
+                    if (Math.min(aa, ab) * pxArea < DEBRIS_MAX_UM2) debrisPairs++ else dupPairs++
+                }
             }
         }
     }
     details.duplicate_pairs = dupPairs
-    println "[export_cells_geojson] duplicate check: ${dupPairs} pair(s) within ${DUP_RADIUS_UM} um"
+    details.debris_pairs_not_checked = debrisPairs
+    println "[export_cells_geojson] duplicate check: ${dupPairs} pair(s) within ${DUP_RADIUS_UM} um" +
+            (debrisPairs ? " (+${debrisPairs} debris pair(s) < ${DEBRIS_MAX_UM2} um^2, not counted)" : '')
 
     if (dupPairs > 0 && FAIL_ON_DUPLICATES) {
         V3_RESULT = [ok: false, changed: false, details: details,
