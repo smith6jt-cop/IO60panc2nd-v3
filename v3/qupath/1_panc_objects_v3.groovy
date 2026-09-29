@@ -495,7 +495,8 @@ if (P.ISLET_METHOD == 'Islets2') {
     CH.each { ch ->
         def r = mine.find { it[iCh] == ch }
         double a = num(r, iAnc)
-        if (!(a > 0) || Double.isInfinite(a))
+        // explicit NaN test: in Groovy `!(NaN > 0)` is false, so a missing row or a NaN anchor would slip through
+        if (r == null || Double.isNaN(a) || Double.isInfinite(a) || a <= 0)
             throw new IllegalStateException("no valid anchor for ${imageName} ${ch} in ${anchorsFile}")
         anchors[ch] = a
         clampMu[ch] = num(r, iMu); clampSd[ch] = num(r, iSd); clampFrac[ch] = num(r, iFr)

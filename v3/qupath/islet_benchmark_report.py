@@ -270,6 +270,10 @@ def main(argv=None) -> int:
     ap.add_argument("--project", type=Path, default=Path("/home/smith6jt/IO60panc2nd/project.qpproj"),
                     help="read-only: the image names to scan for")
     ap.add_argument("--strata-tsv", type=Path)
+    ap.add_argument("--deliver", type=Path,
+                    help="after a clean leak check, write the tiles to this .zip in random order with one fixed "
+                         "timestamp: hand annotators the zip, never the annotate/ folder, whose creation times and "
+                         "directory order group the tiles by image (review 2026-09-29)")
     a = ap.parse_args(argv)
     table = strata_table(a.strata_tsv)
     cov = coverage(a.out_dir, table)
@@ -282,7 +286,29 @@ def main(argv=None) -> int:
     print(f"leak check: {n_tiles} tile(s), {len(bad)} problem row(s)" + ("" if not bad else ":"))
     for r in bad[:20]:
         print(f"  {r['file']}: {r['problems']}")
+    if a.deliver and not bad:
+        n = deliver(a.out_dir, a.deliver)
+        print(f"delivered {n} tile(s) in random order -> {a.deliver}")
     return 1 if bad else 0
+
+
+def deliver(out_dir: Path, zip_path: Path) -> int:
+    """Pack annotate/tiles/*.ome.tif into a zip in a random order, every entry dated 1980-01-01, so neither the
+    member order, nor timestamps, nor the ctimes/inode order of an unpacked copy say which tiles share an image."""
+    import random
+    import zipfile
+    tiles = sorted((out_dir / "annotate" / "tiles").glob("*.ome.tif"))
+    random.SystemRandom().shuffle(tiles)
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = zip_path.with_name(zip_path.name + ".part")
+    with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_STORED) as z:
+        for t in tiles:
+            info = zipfile.ZipInfo(f"tiles/{t.name}", date_time=(1980, 1, 1, 0, 0, 0))
+            info.external_attr = 0o644 << 16
+            with open(t, "rb") as f:
+                z.writestr(info, f.read())
+    tmp.replace(zip_path)
+    return len(tiles)
 
 
 if __name__ == "__main__":

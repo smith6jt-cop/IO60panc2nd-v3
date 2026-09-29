@@ -495,3 +495,13 @@ def test_annotation_hash_sensitivity_and_invariance():
     assert ia.annotation_hash([t, p], ("Tissue", "pLN")) != h                    # the class list is part of it
     tiny = ("Tissue", [_square(0, 0, 100, 100) + 0.004, _square(40, 40, 60, 60)])
     assert ia.annotation_hash([tiny, p], cls) == h                               # below the export's 2 decimals
+
+
+def test_hash_columns_read_back_as_text(tmp_path):
+    # review 2026-09-29: an all-digit hash or digits+one 'e' must survive a CSV round trip (upsert, skip-existing)
+    import pandas as pd
+    p = tmp_path / 'a.csv'
+    p.write_text('image,channel,annotation_hash,params_hash,method_version\n'
+                 'x,CD99,0123456789012345,00001234e5678901,2.0\n', encoding='utf-8')
+    d = pd.read_csv(p, dtype=ia.HASH_DTYPES)
+    assert (d.annotation_hash[0], d.params_hash[0], d.method_version[0]) == ('0123456789012345', '00001234e5678901', '2.0')

@@ -126,6 +126,7 @@ GAUSS_TRUNCATE = 4.0          # kernel radius in sigmas (QuPath/OpenCV use a sim
 TISSUE_CLASSES = ("Tissue",)
 EXCLUDE_CLASSES = ("pLN", "Artifact")   # the detector's EXCLUDE_CLASSES
 EDGE_MARGIN_UM = 5.0          # the detector clips 5 um inside the image edge
+HASH_DTYPES = {"annotation_hash": str, "params_hash": str, "method_version": str}   # read back as text, never numbers
 OCC_SIGMA_UM = 5.0            # DAPI blur for the occupied-tissue mask (bridges cytoplasm between nuclei)
 OCC_PEAK_MIN_HEIGHT = 0.05    # empty-space peak: >= 5% of the tissue peak's height ...
 OCC_PEAK_MIN_PROMINENCE = 0.02
@@ -1139,7 +1140,7 @@ def upsert_csv(rows: list[dict], out: Path) -> "pandas.DataFrame":
         if c not in new.columns:
             new[c] = np.nan
     if out.exists() and out.stat().st_size > 0:
-        old = pd.read_csv(out)
+        old = pd.read_csv(out, dtype=HASH_DTYPES)   # hashes are text: "0123..." or "12e45..." must not become numbers
         keys = set(zip(new["image"], new["channel"]))
         old = old[[(i, c) not in keys for i, c in zip(old["image"], old["channel"])]]
         df = pd.concat([old, new], ignore_index=True)
@@ -1167,7 +1168,7 @@ def existing_images(out: Path, method_version: str = METHOD_VERSION, channels=CH
     import pandas as pd
     if not out.exists() or out.stat().st_size == 0:
         return set()
-    df = pd.read_csv(out, dtype={"method_version": str})
+    df = pd.read_csv(out, dtype=HASH_DTYPES)
     ok = df[df["method_version"].astype(str) == str(method_version)]
     if current_params is not None and "params_hash" in ok:
         ok = ok[ok["params_hash"].astype(str) == current_params]
