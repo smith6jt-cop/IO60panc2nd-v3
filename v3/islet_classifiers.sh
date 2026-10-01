@@ -29,7 +29,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/lib.sh"            # PROJ V3
 STAGE=${1:?stage}; shift
 IDS="" JOBS=4 LANES=2
-# disease.status == ND in Islet-Explorer-Senior/data/donor_acquisition_batch.csv:
+# disease.status == ND in the maintainer's ~/IO60panc2nd/donor_metadata_panc.xlsx (all nine controls):
 # HDL112 (38), HDL115 (17), 6374 (1), 6442 (8), 6461 (9), 6476 (11), 6482 (4), 6493 (6), 6539 (5)
 ND_IDS="38 17 1 8 9 11 4 6 5"
 while (($#)); do
