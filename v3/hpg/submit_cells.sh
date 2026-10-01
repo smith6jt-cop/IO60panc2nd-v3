@@ -51,8 +51,19 @@ start_delay_s() {
     echo $(($(date -d "$when" +%s) - $(date +%s)))
 }
 
+# When this account's own GPU jobs already fill its QOS GPU limit, a new job waits for THEM, not for
+# the partition, and --test-only then reports our own queue. Sending it to a lesser GPU type would
+# only break the preference order, so it is queued on the first choice (found 2026-10-01: four clive
+# jobs went to b200 / l4 behind one running rtx_pro_6000 job).
+gpu_limit=$(sacctmgr -nP show qos "$QOS" format=grptres | tr ',' '\n' | sed -n 's#^gres/gpu=##p' | head -1)
+own_gpu=$(squeue -h -A "$ACCOUNT" -u "$USER" -n v3_cells_gpu -t PENDING,RUNNING -o %i | wc -l)
 pick="" pick_delay=""
+if [[ -n $gpu_limit ]] && ((own_gpu >= gpu_limit)); then
+    pick=${GPU_ORDER[0]}
+    hpg_log "$ACCOUNT already has $own_gpu GPU job(s) for its limit of $gpu_limit: queueing on ${pick%%:*} (first choice)"
+fi
 for entry in "${GPU_ORDER[@]}"; do
+    [[ -n $pick ]] && break
     part=${entry%%:*} typ=${entry##*:}
     d=$(start_delay_s "$part" "$typ")
     hpg_log "test-only $ACCOUNT $part gpu:$typ -> ${d:-refused}${d:+ s}"
