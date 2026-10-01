@@ -11,11 +11,18 @@ tests, not a new one:
 
 Nothing here detects anything. Each pixel object keeps its identity:
     members(object)  = cells with a nucleus and > half their area inside that object
-    resolved object  = the union of its members' own outlines (holes enclosed by members are closed,
-                       so the outline is the outer boundary of the cell set)
+    resolved object  = the union of its members' own outlines, as one region: the one-pixel line the
+                       segmentation leaves between two touching cells is closed (--seam-px), and holes
+                       enclosed by members are closed, so the outline is the outer boundary of the
+                       cell set
     an object with no member is dropped (it was halo, debris, or cells without a nucleus)
-No gap is bridged and no two pixel objects are merged. The area arithmetic is Senior's
-`build_crossed_fraction.covered_fraction` / `subdivide`, imported, not copied.
+Nothing wider than the seam is bridged and no two pixel objects are merged. The area arithmetic is
+Senior's `build_crossed_fraction.covered_fraction` / `subdivide`, imported, not copied.
+
+The seam [measured 2026-10-01, 6523panc]: InstanSeg outlines are rectilinear on the model's 0.5 um
+grid (0.985 image px), and neighbouring cells are separated by one grid step or meet at corners --
+93-95 % of the gaps between the parts of a plain union are <= 1 px. Without closing it, every islet
+is a lace of separate cells and no enclosed hole can ever close. `--seam-px 0` gives the plain union.
 
 Size classes follow Drotar 2025 as published, measured on the resolved outline:
     mean diameter = (minimum caliper width + maximum diameter) / 2, as QuPath defines them
@@ -74,8 +81,23 @@ def min_caliper_width(geom) -> float:
     lengths = np.hypot(edges[:, 0], edges[:, 1])
     keep = lengths > 0
     normals = np.stack([-edges[keep, 1], edges[keep, 0]], axis=1) / lengths[keep, None]
-    widths = (normals @ pts.T - np.sum(normals * pts[keep], axis=1)[:, None]).max(axis=1)
+    # |.|: the hull ring may run either way (GEOS returns it clockwise), so the normal may point out
+    widths = np.abs(normals @ pts.T - np.sum(normals * pts[keep], axis=1)[:, None]).max(axis=1)
     return float(widths.min())
+
+
+def join_cells(cells: list, seam_px: float):
+    """The union of `cells` as a region. With seam_px > 0, gaps no wider than seam_px are closed
+    (a square closing: grow each outline by half the seam, unite, shrink by the same amount), which
+    joins cells separated only by the segmentation's one-pixel boundary line and adds nothing at the
+    outer boundary. seam_px = 0 is the plain union."""
+    if seam_px <= 0 or len(cells) < 2:
+        return unary_union(cells)
+    r = 0.51 * seam_px
+    grown = unary_union([c.buffer(r, join_style="mitre") for c in cells])
+    closed = grown.buffer(-r, join_style="mitre")
+    # the shrink can only lose what the grow added; never return less than the cells themselves
+    return unary_union([closed, *cells])
 
 
 def outer_boundary(geom):
@@ -102,6 +124,8 @@ def main() -> int:
     ap.add_argument("--members", type=Path, required=True, help="TSV: cell id, object id, area fraction")
     ap.add_argument("--summary", type=Path, required=True)
     ap.add_argument("--pixel-um", type=float, default=0.5078)
+    ap.add_argument("--seam-px", type=float, default=1.0,
+                    help="close gaps between member cells no wider than this (image px); 0 = plain union")
     ap.add_argument("--senior-typing", type=Path, default=SENIOR_TYPING)
     args = ap.parse_args()
     started = time.time()
@@ -182,7 +206,7 @@ def main() -> int:
         if not cells:
             dropped[o["class"]] += 1
             continue
-        geom = outer_boundary(unary_union(cells))
+        geom = outer_boundary(join_cells(cells, args.seam_px))
         n_parts = len(geom.geoms) if geom.geom_type == "MultiPolygon" else 1
         multipart += n_parts > 1
         max_d = 2.0 * shapely.minimum_bounding_radius(geom) * px
@@ -212,7 +236,7 @@ def main() -> int:
         for cid, oid, frac, total in rows:
             h.write(f"{cid}\t{oid}\t{frac:.6f}\t{total:.6f}\n")
     summary = {
-        "objects_file": str(args.objects), "cells_file": str(args.cells), "pixel_um": px,
+        "objects_file": str(args.objects), "cells_file": str(args.cells), "pixel_um": px, "seam_px": args.seam_px,
         "majority_area": majority, "rule": "cell with a nucleus and area fraction > majority_area inside one pixel object",
         "cells_in_file": n_cells, "cells_touching_an_object": n_touching, "member_cells": len(rows),
         "majority_cells_without_nucleus": n_majority_no_nucleus,

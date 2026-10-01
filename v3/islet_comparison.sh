@@ -41,8 +41,11 @@ print(re.sub(r"[^A-Za-z0-9._-]+", "_", e["imageName"]))' "$PROJ/project.qpproj" 
 
 run_driver() {   # run_driver <variant> <extra run_v3.sh args...>
     local v=$1; shift
+    # heaps sized to what these steps were measured to use (R_export 10 GB, step 4 <= 19 GB, preflight
+    # <= 16 GB peak RSS), so the comparison fits beside the cells pass inside the host's 300 GB budget
     "$HERE/run_v3.sh" --project "$REV/$v/project.qpproj" --out "$REV/$v/out" --images "$ids_csv" \
-        --lanes-light 1 --lanes-cpu 1 --mem-budget 300 "$@"
+        --lanes-light 1 --lanes-cpu 1 --mem-budget 300 \
+        --heap preflight=24 --heap 4=32 --heap R_export=32 --heap R_import=32 "$@"
 }
 
 case $STAGE in
