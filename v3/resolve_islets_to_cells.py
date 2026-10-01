@@ -9,6 +9,16 @@ tests, not a new one:
     a cell belongs to an object when the MAJORITY of the cell's area lies inside it
     (area fraction > subpanel.MAJORITY_AREA, strict), and only a cell with a nucleus is a cell.
 
+AREA ALONE WAS NOT ENOUGH (maintainer, 2026-10-01, on the 3-image comparison: "Too many false
+positives handling segmentations around endocrine-positive cells"). The pixel object overshoots the
+islet -- a bright cell lights its neighbours and the detector's threshold sits below that light -- so
+the ring of neighbours is more than half covered and joined. The structure rule has a second half for
+exactly this ("a vessel crossing a cell does not make the cell a vessel"): the cell's own markers must
+say it. With --cell-test that half is applied here: a cell is a member only if, in addition, the table
+written by islet_cell_test.py says it passes. Which test that table holds is the maintainer's choice
+and is recorded in it; this script only reads the answer. A cell that fails but is enclosed by members
+still lies inside the outline.
+
 Nothing here detects anything. Each pixel object keeps its identity:
     members(object)  = cells with a nucleus and > half their area inside that object
     resolved object  = the union of its members' own outlines, as one region: the one-pixel line the
@@ -126,6 +136,8 @@ def main() -> int:
     ap.add_argument("--pixel-um", type=float, default=0.5078)
     ap.add_argument("--seam-px", type=float, default=1.0,
                     help="close gaps between member cells no wider than this (image px); 0 = plain union")
+    ap.add_argument("--cell-test", type=Path, default=None,
+                    help="Parquet written by islet_cell_test.py (object_id, passes, why): with it, a member must also pass")
     ap.add_argument("--senior-typing", type=Path, default=SENIOR_TYPING)
     args = ap.parse_args()
     started = time.time()
@@ -161,10 +173,18 @@ def main() -> int:
     tree = STRtree(pieces)
     owner = np.asarray(owner)
 
+    test, test_rule = None, None
+    if args.cell_test is not None:
+        import pyarrow.parquet as pq
+        table = pq.read_table(args.cell_test, columns=["object_id", "passes", "why"])
+        test_rule = {k.decode(): v.decode() for k, v in (table.schema.metadata or {}).items() if k in (b"rule", b"rule_text", b"values", b"level")}
+        test = dict(zip(table["object_id"].to_pylist(), zip(table["passes"].to_pylist(), table["why"].to_pylist())))
+
     # ---- every cell against the objects it touches ----
     members: dict[int, list] = {}
     rows = []
-    n_cells = n_touching = n_majority_no_nucleus = 0
+    n_cells = n_touching = n_majority_no_nucleus = n_failed = n_not_asked = 0
+    failed_why: Counter = Counter()
     with open(args.cells, "rb") as handle:
         for f in ijson.items(handle, "features.item", use_float=True):
             n_cells += 1
@@ -192,6 +212,15 @@ def main() -> int:
             if "nucleusGeometry" not in f:             # no nucleus: not a cell for any calculation
                 n_majority_no_nucleus += 1
                 continue
+            if test is not None:                       # the cell's own markers must say it
+                answer = test.get(f["id"])
+                if answer is None:
+                    n_not_asked += 1                   # not in the table: it cannot be asked, so it is not a member
+                    continue
+                if not answer[0]:
+                    n_failed += 1
+                    failed_why[answer[1]] += 1
+                    continue
             total = bcf.covered_fraction(tree, pieces, outline, cell_area)
             members.setdefault(k, []).append(outline)
             rows.append((f["id"], objects[k]["id"], frac, total))
@@ -237,7 +266,14 @@ def main() -> int:
             h.write(f"{cid}\t{oid}\t{frac:.6f}\t{total:.6f}\n")
     summary = {
         "objects_file": str(args.objects), "cells_file": str(args.cells), "pixel_um": px, "seam_px": args.seam_px,
-        "majority_area": majority, "rule": "cell with a nucleus and area fraction > majority_area inside one pixel object",
+        "majority_area": majority,
+        "rule": ("cell with a nucleus, area fraction > majority_area inside one pixel object"
+                 + (f", and: {test_rule.get('rule_text', 'passes the cell test')}" if test is not None else "")),
+        "cell_test_file": str(args.cell_test) if args.cell_test else None,
+        "cell_test": test_rule,
+        "majority_cells_failing_the_cell_test": n_failed,
+        "why_they_failed": dict(failed_why.most_common(12)),
+        "majority_cells_not_in_the_cell_test": n_not_asked,
         "cells_in_file": n_cells, "cells_touching_an_object": n_touching, "member_cells": len(rows),
         "majority_cells_without_nucleus": n_majority_no_nucleus,
         "pixel_objects": len(objects), "pixel_objects_by_class": dict(by_class_pixel),

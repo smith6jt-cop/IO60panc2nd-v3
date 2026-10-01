@@ -127,3 +127,43 @@ def test_membership_is_majority_of_area_with_a_nucleus(tmp_path):
     assert m["Min diameter um"] == pytest.approx(10.0)
     assert m["Max diameter um"] == pytest.approx(math.hypot(34, 10), rel=1e-6)
     assert out[0]["properties"]["classification"]["name"] == "EndocrineCluster"   # (35.4 + 10) / 2 = 22.7
+
+
+def test_a_member_must_also_pass_the_cell_test(tmp_path):
+    # a bright cell and the neighbour its halo covers: both are more than half inside the pixel object
+    obj = box(0, 0, 21, 10)
+    cells = [_cell(0, box(0, 0, 10, 10)), _cell(1, box(10.98, 0, 20.98, 10)), _cell(2, box(0, 10.98, 10, 20)),
+             _cell(3, box(0, 0.5, 0.5, 1))]                                 # cell-3: inside, but absent from the table
+    objects = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "id": "obj-1", "geometry": mapping(obj),
+         "properties": {"objectType": "annotation", "classification": {"name": "EndocrineCluster"}}}]}
+    (tmp_path / "objects.geojson").write_text(json.dumps(objects))
+    (tmp_path / "cells.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": cells}))
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.table({"object_id": ["cell-0", "cell-1"], "passes": [True, False],
+                      "why": ["CD99 at or above the level", "CD99 below the level; highest marker Ker8_18"]})
+    pq.write_table(table.replace_schema_metadata({"rule": "cd99-or-hormone-top", "rule_text": "the test"}), tmp_path / "test.parquet")
+    base = [sys.executable, str(SCRIPT), "--objects", str(tmp_path / "objects.geojson"), "--cells", str(tmp_path / "cells.geojson"),
+            "--pixel-um", "1.0"]
+
+    def run(name, *extra):
+        subprocess.run(base + ["--out", str(tmp_path / f"{name}.geojson"), "--members", str(tmp_path / f"{name}.tsv"),
+                               "--summary", str(tmp_path / f"{name}.json"), *extra], check=True, capture_output=True)
+        members = [line.split("\t")[0] for line in (tmp_path / f"{name}.tsv").read_text().splitlines()[1:]]
+        return members, json.loads((tmp_path / f"{name}.json").read_text())
+
+    area_only, _ = run("area")
+    assert sorted(area_only) == ["cell-0", "cell-1", "cell-3"]             # the halo neighbour joins on area alone
+    both, summary = run("full", "--cell-test", str(tmp_path / "test.parquet"))
+    assert both == ["cell-0"]
+    assert summary["majority_cells_failing_the_cell_test"] == 1
+    assert summary["why_they_failed"] == {"CD99 below the level; highest marker Ker8_18": 1}
+    assert summary["majority_cells_not_in_the_cell_test"] == 1               # never a member on no answer
+    assert summary["cell_test"]["rule"] == "cd99-or-hormone-top" and summary["rule"].endswith("and: the test")
+    out = json.loads((tmp_path / "full.geojson").read_text())["features"]
+    assert out[0]["properties"]["measurements"]["n_cells"] == 1
+    # one cell, 10 x 10 um: mean diameter (14.14 + 10) / 2 = 12.07 um, so Drotar's class is Cluster while
+    # n_cells says one -- the two readings of "single" the maintainer has to choose between
+    assert out[0]["properties"]["classification"]["name"] == "EndocrineCluster"
+    assert out[0]["properties"]["measurements"]["Mean diameter um"] == pytest.approx(12.07, abs=0.01)

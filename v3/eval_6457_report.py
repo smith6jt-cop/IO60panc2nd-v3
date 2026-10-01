@@ -54,17 +54,6 @@ def per_cycle(reg: pd.DataFrame, tile: int) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(["comparison", "cycle"])
 
 
-def sharpness(d: Path, reg: pd.DataFrame) -> pd.DataFrame:
-    c0 = pd.read_parquet(d / "cycle0_dapi_tiles.parquet")
-    raw = reg[reg["comparison"] == "raw_vs_raw0"].merge(c0, on=["row", "col"], suffixes=("", "_c0"))
-    raw["ratio"] = raw["dapi_sharp"] / raw["dapi_sharp_c0"]
-    out = raw.groupby("cycle").agg(dapi_sharp_median=("dapi_sharp", "median"),
-                                   ratio_to_cycle0_median=("ratio", "median"),
-                                   tiles_below_half_of_cycle0=("ratio", lambda s: float((s < 0.5).mean()))).reset_index()
-    out.attrs["cycle0"] = c0
-    return out
-
-
 def table(df: pd.DataFrame, cols: list[str], digits: int = 2) -> str:
     head = "| " + " | ".join(cols) + " |\n|" + "---|" * len(cols) + "\n"
     body = ""
@@ -120,13 +109,9 @@ def describe(d: Path, label: str) -> tuple[str, dict]:
         stats["contrast_later_cycles_median_range"] = [float(later["contrast_median"].min()), float(later["contrast_median"].max())]
         stats["fine_detail_cycle0_median"] = float(c0row["focus_median"])
         stats["fine_detail_later_cycles_median_range"] = [float(later["focus_median"].min()), float(later["focus_median"].max())]
-    rep = d / "reporter_sharpness_vs_dapi.tsv"
-    if rep.exists() and rep.stat().st_size > 5:
-        r = pd.read_csv(rep, sep="\t")
-        r = r[r["channel"] != "DAPI"]
-        # NOT reported: Laplacian variance / mean^2 rises as a tile gets dimmer, so on reporter channels it
-        # measured brightness and tissue coverage, not blur (median ratio 4.9 in both 6457 and the control).
-        del r
+    # reporter_sharpness_vs_dapi.tsv is NOT reported: Laplacian variance / mean^2 rises as a tile gets dimmer,
+    # so on reporter channels it measured brightness and tissue coverage, not blur (median ratio 4.9 in both
+    # 6457 and the control).
     fin = d / "final_dapi_source.tsv"
     if fin.exists():
         f = pd.read_csv(fin, sep="\t").sort_values("ncc_with_final_dapi", ascending=False)
