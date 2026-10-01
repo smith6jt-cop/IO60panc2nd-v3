@@ -1,11 +1,19 @@
 /*
  * 7_tiled_pixel_classifiers_v3.groovy   (v3 copy of scripts/7_tiled_pixel_classifiers.groovy; the original is unchanged)
  *
- * v3 change (the only one): the tiled area is the union of every Tissue AND every pLN annotation
- * (REGION_CLASSES), so a lymph node drawn disjoint from the Tissue polygon (6533, HDL112, HDL115, 6551)
- * is classified too; pLN is also added to the preserved classes the per-tile safety check counts.
- * Output files, names and contents are otherwise unchanged. (A pLN inside Tissue adds nothing: the
- * union is the same area.)
+ * v3 changes:
+ *   - the tiled area is the union of every Tissue AND every pLN annotation (REGION_CLASSES), so a lymph
+ *     node drawn disjoint from the Tissue polygon (6533, HDL112, HDL115, 6551) is classified too; pLN is
+ *     also added to the preserved classes the per-tile safety check counts. (A pLN inside Tissue adds
+ *     nothing: the union is the same area.)
+ *   - 2026-10-01, for run_v3.sh step '7': args[0] names the output root. Files go to
+ *     <root>/<Class>/<Class>__<image tag>.geojson -- one file per image and class, the layout the Senior
+ *     typing lane reads (context.load_objects) -- and the resume files to <root>/scratch/. Without
+ *     args the files go to results/ exactly as before.
+ *   - a tile that FAILED is no longer counted as done on resume (it was: the resume reader matched every
+ *     row/col line), so a re-run retries it, and the outcome goes to V3_RESULT: the step passes only when
+ *     every marker wrote its file and no tile failed. Nothing is saved to the data file.
+ * The classifiers, the tile size, the minimum area and the simplification are the original's.
  *
  * Original header:
  * 07_tiled_pixel_classifiers.groovy
@@ -91,17 +99,21 @@ double tileSizePxY = TILE_SIZE_UM / sy
 int nCols = (int) Math.ceil((env.getMaxX() - env.getMinX()) / tileSizePxX)
 int nRows = (int) Math.ceil((env.getMaxY() - env.getMinY()) / tileSizePxY)
 
-def baseDir = buildFilePath(PROJECT_BASE_DIR, 'results')
+// v3: args[0] = output root (run_v3.sh passes {OUT}/structures); the tag then follows the driver's convention
+boolean V3_LAYOUT = binding.hasVariable('args') && args && args.length > 0 && args[0]?.trim()
+def baseDir = V3_LAYOUT ? args[0].trim() : buildFilePath(PROJECT_BASE_DIR, 'results')
 mkdirs(baseDir)
 def imageTag = (getProjectEntry()?.getImageName() ?: server?.getShortServerName() ?: 'img')
-        .replaceAll('[^A-Za-z0-9._-]', '_')
+        .replaceAll(V3_LAYOUT ? '[^A-Za-z0-9._-]+' : '[^A-Za-z0-9._-]', '_')
+def markerResults = [:]     // marker -> what happened, for V3_RESULT
 
 def tempPC = PathClass.fromString(TEMP_CLASS)
 
 // ==================== PER-MARKER RUNNER ====================
 def runMarker = { String marker ->
     def entry = MARKER_TABLE[marker]
-    if (entry == null) { println "[07] Skipping unknown marker '${marker}'"; return }
+    markerResults[marker] = [ok: false, message: 'did not finish']
+    if (entry == null) { println "[07] Skipping unknown marker '${marker}'"; markerResults[marker].message = 'unknown marker'; return }
     String CLASSIFIER_NAME = entry.classifier
     String RAW_CLASS       = entry.rawClass
     boolean KEEP_IN_HIER   = entry.keepInHierarchy
@@ -111,12 +123,16 @@ def runMarker = { String marker ->
     def classifierPath = buildFilePath(PROJECT_BASE_DIR, 'classifiers', 'pixel_classifiers', "${CLASSIFIER_NAME}.json")
     if (!new File(classifierPath).exists()) {
         println "[07] ERROR: classifier '${CLASSIFIER_NAME}.json' not found at ${classifierPath}"
+        markerResults[marker].message = "classifier ${CLASSIFIER_NAME}.json not found".toString()
         return
     }
 
     def safeClass = RAW_CLASS.replaceAll('[^A-Za-z0-9._-]', '_')
-    def finalPath   = buildFilePath(baseDir, "${safeClass}__${imageTag}.geojson")
-    def scratchPath = buildFilePath(baseDir, "${safeClass}__${imageTag}.scratch.jsonl")
+    def finalDir   = V3_LAYOUT ? buildFilePath(baseDir, safeClass) : baseDir
+    def scratchDir = V3_LAYOUT ? buildFilePath(baseDir, 'scratch') : baseDir
+    mkdirs(finalDir); mkdirs(scratchDir)
+    def finalPath   = buildFilePath(finalDir, "${safeClass}__${imageTag}.geojson")
+    def scratchPath = buildFilePath(scratchDir, "${safeClass}__${imageTag}.scratch.jsonl")
     println "[07]   final:  ${finalPath}"
     println "[07]   scratch:${scratchPath}"
 
@@ -159,6 +175,7 @@ def runMarker = { String marker ->
     def scratchFile = new File(scratchPath)
     if (!TEST_MODE && scratchFile.exists()) {
         scratchFile.eachLine('UTF-8') { line ->
+            if (line.contains('"failed":true')) return      // v3: a failed tile is retried, not counted as done
             def m = (line =~ /^\{"row":\s*(\d+),\s*"col":\s*(\d+)/)
             if (m.find()) completedTiles << "${m.group(1)}_${m.group(2)}"
         }
@@ -340,6 +357,10 @@ def runMarker = { String marker ->
         }
         double mb = new File(finalPath).length() / (1024.0 * 1024.0)
         println String.format("[07]   Wrote %s (%.1f MB)", finalPath, mb)
+        markerResults[marker] = [ok: tilesFailed == 0, output: finalPath, classifier: CLASSIFIER_NAME, raw_class: RAW_CLASS,
+                                 tiles_processed: tilesProcessed, tiles_resumed: tilesSkipped, tiles_empty: tilesEmpty,
+                                 tiles_failed: tilesFailed, objects_this_run: totalObjects, megabytes: mb,
+                                 message: (tilesFailed == 0 ? 'complete' : "${tilesFailed} tile(s) failed".toString())]
 
         // For CD34 only: re-import as Blood_vessel annotations
         if (KEEP_IN_HIER) {
@@ -357,6 +378,7 @@ def runMarker = { String marker ->
         }
     }
 
+    if (aborted) markerResults[marker].message = 'aborted: a preserved annotation class lost objects'
     println String.format("[07]   %s done. processed=%d skipped=%d empty=%d failed=%d objects=%d in %.1fmin",
             marker, tilesProcessed, tilesSkipped, tilesEmpty, tilesFailed, totalObjects,
             (System.currentTimeMillis() - tStart) / 60000.0)
@@ -367,3 +389,14 @@ long runStart = System.currentTimeMillis()
 MARKERS.each { marker -> runMarker(marker) }
 println String.format("[07] All markers done in %.1f min",
         (System.currentTimeMillis() - runStart) / 60000.0)
+
+// v3: the verdict for the run_v3 footer. Nothing was saved: every object went to GeoJSON and the temp tiles were removed.
+boolean allOk = !TEST_MODE && MARKERS.every { markerResults[it]?.ok == true }
+def leftovers = getAnnotationObjects().count { it.getPathClass()?.toString() == TEMP_CLASS }
+V3_RESULT = [ok: allOk && leftovers == 0, changed: false,
+             message: MARKERS.collect { "${it}: ${markerResults[it]?.message}" }.join('; ').toString(),
+             details: [markers: markerResults, regions: tissueAnns.countBy { it.getPathClass().toString() },
+                       tile_um: TILE_SIZE_UM, min_area_um2: MIN_AREA_UM2, simplify_px: SIMPLIFY_TOL_PX,
+                       temp_annotations_left: leftovers, minutes: (System.currentTimeMillis() - runStart) / 60000.0,
+                       outputs: MARKERS.collect { markerResults[it]?.output }.findAll { it }]]
+println "[07] ${V3_RESULT.ok ? 'OK' : 'FAILED'}: ${V3_RESULT.message}"

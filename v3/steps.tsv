@@ -2,7 +2,7 @@
 # Edit this file, not run_v3.sh, to plug in a new script, change a heap or add a step.
 #
 #  step           id used in provenance/<tag>/<site>/<step>.json, logs and --steps/--force/--rerun-from
-#  passes         I = islets, C = cells, J = context + exports; X/R = reviewed-islet export/import for
+#  passes         I = islets, C = cells, S = structure objects, J = context + exports; X/R = reviewed-islet export/import for
 #                 HiPerGator's pass J. A step may belong to several passes (preflight: I,C).
 #  script         path relative to the project repo root. 'a|b' = candidates: --script-set v3 (default)
 #                 requires the first, orig takes the last, auto the first that exists.
@@ -37,6 +37,7 @@ preflight	I,C	scripts/v3/preflight.groovy	-	footer-saves	light	64	8	15	-	-	stale
 2	C	scripts/2_fast_cell_measurements.groovy	-	footer-saves	cpu	160	24	150	0	-	keep	N_THREADS=24	cells_measured(measurement=Cell: DAPI: Mean)	-	all shape + intensity measurements
 C_cells	C	scripts/v3/exports.groovy	cells|{TMP}/{TAG}.cells.tsv	never	cpu	128	8	60	2	-	stale	-	v3_result	cells_parquet	every detection measurement except signed distances -> cells/<tag>.parquet
 C_geojson	C	scripts/v3/qupath/export_cells_geojson_v3.groovy	{OUT}/cell_geojson/{TAG}.geojson	never	cpu	96	8	45	0	-	stale	-	v3_result	-	cell polygons -> cell_geojson/<tag>.geojson
+7	S	scripts/v3/qupath/7_tiled_pixel_classifiers_v3.groovy	{OUT}/structures	never	cpu	64	16	240	-	preflight	stale	-	v3_result	-	structure objects (Nerve, Blood_vessel, Lymphatic) by 2 mm tile over Tissue + pLN -> structures/<Class>/<Class>__<tag>.geojson; needs no cells
 3	J	scripts/v3/qupath/3_signed_distance_v3.groovy|scripts/3_signed_distance.groovy	-	footer-saves	cpu	128	24	240	0,1,R_import?	2	stale	-	signed_distance(classes=Islet|EndocrineCluster|EndocrineSingle|Artifact|pLN|Tissue)	-	signed distance to each annotation class
 8	J	scripts/v3/qupath/8_hierarchy_parenting_v3.groovy|scripts/8_hierarchy_parenting.groovy	-	footer-saves	cpu	128	16	240	0,1,4,R_import?	-	stale	-	parenting(forbid=Other: Gal3Norm|ROOT|NONE)	-	parent each cell to its annotation
 J_context	J	scripts/v3/exports.groovy	context|{TMP}/{TAG}.context.tsv	never	cpu	128	8	240	3,8	2	stale	-	v3_result	context_parquet	Object ID, Parent, centroids, distances -> context/<tag>.parquet
