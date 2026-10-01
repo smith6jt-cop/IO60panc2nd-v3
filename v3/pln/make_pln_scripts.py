@@ -6,10 +6,13 @@ and project differ (maintainer, 2026-09-30: "some channels on the panc data may 
 on the pLN data"):
 
   0_cell_detection_pln.groovy   InstanSeg's inputs are the pancreas script's 13 minus CD99, the one
-                                channel of them the 56-channel pLN panel does not carry.
-  preflight_pln.groovy          asks for those 12 channels (not CD99, INS, GCG, SST) and for at least
-                                one Tissue annotation, none nested in another, instead of exactly one:
-                                a pLN slide carries one Tissue outline per node section (1-3).
+                                channel of them the 56-channel pLN panel does not carry; the pixel size
+                                is the one the IO60pLN project entries carry (0.5077663810243286 um,
+                                the images' own), not the pancreas project's 0.5078.
+  preflight_pln.groovy          asks for those 12 channels (not CD99, INS, GCG, SST), for that pixel
+                                size, and for at least one Tissue annotation, none nested in another,
+                                instead of exactly one: a pLN slide carries one Tissue outline per node
+                                section (1-3).
 
 The variants are GENERATED, never edited: each substitution must match exactly once, so a change in
 the pancreas script either carries over or stops this script. Run it after editing either source.
@@ -31,6 +34,9 @@ JOBS = {
          '''// IO60pLN: the pancreas script's 13 inputs minus CD99, which the 56-channel pLN panel does not carry
 List<String> INPUT_CHANNELS = ["DAPI", "CD68", "CD44", "Vimentin", "E-cadherin", "M2Gal3", "HLA-A",
                                "Pan-Cytokeratin", "CD79a", "CD3e", "Beta-actin", "Iba1"]'''),
+        ('''double PIXEL_SIZE_UM = 0.5078     // same value 1_panc_objects.groovy sets; InstanSeg derives its downsample from it''',
+         '''// IO60pLN: the calibration its 19 project entries carry (the images' own), so nothing changes between steps
+double PIXEL_SIZE_UM = 0.5077663810243286'''),
     ]),
     "pln/preflight_pln.groovy": ("preflight.groovy", [
         ('''List<String> REQUIRED_CHANNELS = ['DAPI', 'CD68', 'CD44', 'Vimentin', 'CD99', 'E-cadherin', 'M2Gal3', 'HLA-A',
@@ -38,6 +44,9 @@ List<String> INPUT_CHANNELS = ["DAPI", "CD68", "CD44", "Vimentin", "E-cadherin",
          '''// IO60pLN: the 12 InstanSeg inputs of pln/0_cell_detection_pln.groovy (no CD99; no hormones on this panel)
 List<String> REQUIRED_CHANNELS = ['DAPI', 'CD68', 'CD44', 'Vimentin', 'E-cadherin', 'M2Gal3', 'HLA-A',
                                   'Pan-Cytokeratin', 'CD79a', 'CD3e', 'Beta-actin', 'Iba1']'''),
+        ('''double EXPECTED_PIXEL_UM = 0.5078''',
+         '''// IO60pLN: its project entries carry the images' own calibration, not the pancreas project's 0.5078
+double EXPECTED_PIXEL_UM = 0.5077663810243286'''),
         ('''checks.tissue = [ok     : tissues.size() == 1,''',
          '''// IO60pLN: one Tissue outline per node section (1-3 per slide); none may sit inside another
 checks.tissue = [ok     : tissues.size() >= 1 && tissues.count { hasTissueAncestor(it) } == 0,'''),

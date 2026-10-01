@@ -35,7 +35,8 @@ import org.locationtech.jts.operation.union.UnaryUnionOp
 // IO60pLN: the 12 InstanSeg inputs of pln/0_cell_detection_pln.groovy (no CD99; no hormones on this panel)
 List<String> REQUIRED_CHANNELS = ['DAPI', 'CD68', 'CD44', 'Vimentin', 'E-cadherin', 'M2Gal3', 'HLA-A',
                                   'Pan-Cytokeratin', 'CD79a', 'CD3e', 'Beta-actin', 'Iba1']
-double EXPECTED_PIXEL_UM = 0.5078
+// IO60pLN: its project entries carry the images' own calibration, not the pancreas project's 0.5078
+double EXPECTED_PIXEL_UM = 0.5077663810243286
 double PIXEL_TOLERANCE   = 1e-6      // strict on purpose, see check 2
 double PLN_CONTAINED_MIN = 0.99      // >= 99% inside Tissue: contained
 double STEP0_MAX_OVERLAP_UM2 = 10.0  // = v3 script 0's MAX_REGION_OVERLAP_UM2: disjoint means sharing at most this

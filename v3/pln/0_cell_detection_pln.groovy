@@ -91,7 +91,8 @@ String TISSUE_CLASS = "Tissue"    // the containing region: a pLN inside it is s
 double CONTAINED_MIN_FRACTION = 0.99   // a pLN with >= 99% of its area inside Tissue counts as contained
 double MAX_REGION_OVERLAP_UM2 = 10.0   // "disjoint": two segmented regions share at most this area
                                        // (~1/5 of a cell; 6551's pLN touches Tissue with 0.0 shared area)
-double PIXEL_SIZE_UM = 0.5078     // same value 1_panc_objects.groovy sets; InstanSeg derives its downsample from it
+// IO60pLN: the calibration its 19 project entries carry (the images' own), so nothing changes between steps
+double PIXEL_SIZE_UM = 0.5077663810243286
 // IO60pLN: the pancreas script's 13 inputs minus CD99, which the 56-channel pLN panel does not carry
 List<String> INPUT_CHANNELS = ["DAPI", "CD68", "CD44", "Vimentin", "E-cadherin", "M2Gal3", "HLA-A",
                                "Pan-Cytokeratin", "CD79a", "CD3e", "Beta-actin", "Iba1"]
