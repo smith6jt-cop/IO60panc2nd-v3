@@ -40,8 +40,9 @@ for s in preflight 0 2 C_cells C_geojson; do
 done
 f=$p/C_cells.post.json
 if [ -s "$f" ]; then python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(\"C_cells.post\", d.get(\"status\"))" "$f"; else echo "C_cells.post missing"; fi
-stat -c "qpdata %s" $3/data/$4/data.qpdata
-for f in $1/cells/$2.parquet $1/cell_geojson/$2.geojson; do [ -s "$f" ] && echo "file $(stat -c %s "$f") $f"; done
+stat -c "qpdata %s" $3/data/$4/data.qpdata 2>/dev/null || echo "qpdata-missing"
+for f in $1/cells/$2.parquet $1/cell_geojson/$2.geojson; do if [ -s "$f" ]; then echo "file $(stat -c %s "$f") $f"; fi; done
+exit 0
 '
 remote_state=$(ssh hpg bash -s -- "$RP" "$TAG" "$BLUE" "$ID" <<< "$remote_check")
 echo "$remote_state" | sed 's/^/  hpg: /'
