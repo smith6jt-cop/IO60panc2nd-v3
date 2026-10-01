@@ -8,22 +8,40 @@
 # passed; nothing local is overwritten unless the local file is still the stripped file that was
 # sent up.
 #
-# Usage: fetch_cells.sh <entry id> [--out DIR] [--check]
+# Usage: fetch_cells.sh <entry id> [--out DIR] [--check] [--profile pln]
+#
+# --profile pln fetches an image of the IO60pLN project (~/IO60pLN, /blue/.../IO60pLN_v3). Its local data
+# file is NOT a stripped file: it is the project's own file with the July cells, so it is replaced only
+# when it is byte-for-byte the size of its copy in /data/IO60panc2nd_archive/pln_qpdata_2026-10-01 (nothing
+# that is not backed up is overwritten) and no QuPath window is open.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../lib.sh
 source "$HERE/../lib.sh"          # PROJ V3
 ID=${1:?entry id}; shift || true
-OUT=$PROJ/results/v3/export CHECK=0
+OUT="" CHECK=0 PROFILE=""
 while (($#)); do
     case $1 in
         --out) OUT=$2; shift ;;
         --check) CHECK=1 ;;
+        --profile) PROFILE=$2; shift ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
 done
 BLUE=/blue/maigan/smith6jt/IO60panc2nd_v3
+VARIANT=()
+case $PROFILE in
+    "") ;;
+    pln)
+        PROJ=/home/smith6jt/IO60pLN
+        BLUE=/blue/maigan/smith6jt/IO60pLN_v3
+        PLN_BACKUP=/data/IO60panc2nd_archive/pln_qpdata_2026-10-01
+        VARIANT=(--project "$PROJ/project.qpproj" --script "preflight=$HERE/../pln/preflight_pln.groovy"
+                 --script "0=$HERE/../pln/0_cell_detection_pln.groovy") ;;
+    *) echo "--profile must be pln" >&2; exit 2 ;;
+esac
+: "${OUT:=$PROJ/results/v3/export}"
 REL=${OUT#"$PROJ"/results/}                         # e.g. v3/export
 
 TAG=$(python3 -c 'import json, re, sys
@@ -54,9 +72,24 @@ if ((n_pass != 6 || n_file != 2)) || ! grep -q '^qpdata ' <<< "$remote_state"; t
 fi
 ((CHECK)) && { echo "ready: entry $ID ($TAG)"; exit 0; }
 
-# ---- 2. the local file must still be the stripped one (nothing local would be lost) ----
+# ---- 2. nothing local may be lost: the local file is the stripped one, or (pln) it is backed up ----
 local_size=$(stat -c %s "$PROJ/data/$ID/data.qpdata")
-if ((local_size > 50 * 1024 * 1024)); then
+if [[ $PROFILE == pln ]]; then
+    backup_size=$(stat -c %s "$PLN_BACKUP/data/$ID/data.qpdata" 2> /dev/null || echo -1)
+    hpg_size=$(sed -n 's/^qpdata //p' <<< "$remote_state")
+    if ((local_size == hpg_size)); then
+        echo "entry $ID ($TAG): the local file already has HiPerGator's size; nothing to fetch"
+        exit 0
+    fi
+    if ((local_size != backup_size)); then
+        echo "REFUSED: local data/$ID/data.qpdata ($local_size bytes) differs from its backup ($backup_size bytes) -- it changed after the backup; resolve by hand" >&2
+        exit 4
+    fi
+    if pgrep -f 'QuPath/bin/QuPath$' > /dev/null; then
+        echo "REFUSED for now: a QuPath window is open; the IO60pLN data file is not replaced under it" >&2
+        exit 5
+    fi
+elif ((local_size > 50 * 1024 * 1024)); then
     echo "REFUSED: local data/$ID/data.qpdata is ${local_size} bytes -- not the stripped file; resolve by hand" >&2
     exit 4
 fi
@@ -72,5 +105,5 @@ rsync -a hpg:"$BLUE/data/$ID/server.json" hpg:"$BLUE/data/$ID/summary.json" "$PR
 mv -f "$PROJ/data/$ID/data.qpdata.from_hpg" "$PROJ/data/$ID/data.qpdata"
 
 # ---- 3. adopt the hpg records: the driver validates the chain against the file now on disk ----
-"$HERE/../run_v3.sh" --merge-provenance --from hpg --images "id:$ID" --out "$OUT"
+"$HERE/../run_v3.sh" --merge-provenance --from hpg --images "id:$ID" --out "$OUT" "${VARIANT[@]}"
 log "fetched and merged entry $ID ($TAG): $(stat -c %s "$PROJ/data/$ID/data.qpdata") bytes"

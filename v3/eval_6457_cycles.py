@@ -148,9 +148,18 @@ def marker_sharpness(f: Path, tissue: np.ndarray, tile: int, cycle: int, kind: s
     return pd.DataFrame(rows, columns=["cycle", "kind", "channel", "row", "col", "sharp_l1", "mean_l1"])
 
 
-def one_cycle(temp, prefix, month, cycle, raw0_file, int1_file, int1_cycle, tissue, tile):
-    """The three comparisons for one cycle, holding at most two full-resolution planes at a time."""
+def one_cycle(temp, prefix, month, cycle, raw0_file, int1_file, int1_cycle, tissue, tile, raw_only=False):
+    """The three comparisons for one cycle, holding at most two full-resolution planes at a time.
+    With raw_only, just the raw DAPI against the raw reference (which may be another cycle than 0)."""
     reg, mark = [], []
+    if raw_only:
+        raw_f = cycle_file(temp, prefix, cycle, "raw", month)
+        if raw_f is None:
+            return None, None
+        d = measure_pair(read_plane(raw0_file, 0), read_plane(raw_f, 0), tissue, tile)
+        d.insert(0, "comparison", "raw_vs_raw0")
+        d.insert(0, "cycle", cycle)
+        return d, None
     raw_f = cycle_file(temp, prefix, cycle, "raw", month)
     int_f = cycle_file(temp, prefix, cycle, "intermediate", month)
 
@@ -291,6 +300,10 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--cycles", default="", help="comma list; default every cycle found")
     ap.add_argument("--final", type=Path, default=None, help="the final combined qptiff (optional)")
+    ap.add_argument("--raw-reference-cycle", type=int, default=0,
+                    help="compare every raw DAPI against THIS cycle's raw DAPI instead of cycle 0's, and nothing "
+                         "else (no intermediates, no reporter channels): how well the raw cycles agree with one "
+                         "another when cycle 0 is the odd one out. The tissue tiles are still found on cycle 0.")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     started = time.time()
@@ -307,7 +320,8 @@ def main() -> int:
     int_cycles = [c for c in sorted(found) if found[c]["intermediate"]]
     int1_cycle = int_cycles[0] if int_cycles else None
     int1_file = Path(found[int1_cycle]["intermediate"]) if int1_cycle is not None else None
-    run = [c for c in sorted(found) if c in wanted and c != 0]
+    raw_only = args.raw_reference_cycle != 0
+    run = [c for c in sorted(found) if c in wanted and c != 0 and c != args.raw_reference_cycle]
 
     ref = read_plane(raw0_file, 0)
     tissue = tissue_grid(ref, args.tile)
@@ -317,13 +331,22 @@ def main() -> int:
     del ref
     print(f"reference {raw0_file.name}: {shape}, {int(tissue.sum())} tissue tiles of {tissue.size}; "
           f"first intermediate: cycle {int1_cycle}; cycles {run}", flush=True)
+    raw_ref_file = raw0_file
+    if raw_only:
+        raw_ref_file = cycle_file(args.temp, args.prefix, args.raw_reference_cycle, "raw", args.month)
+        if raw_ref_file is None:
+            raise SystemExit(f"no raw file for reference cycle {args.raw_reference_cycle}")
+        print(f"raw reference: {raw_ref_file.name} (raw DAPI only)", flush=True)
 
     from joblib import Parallel, delayed
     results = Parallel(n_jobs=args.workers, verbose=5)(
-        delayed(one_cycle)(args.temp, args.prefix, args.month, c, raw0_file, int1_file, int1_cycle, tissue, args.tile)
+        delayed(one_cycle)(args.temp, args.prefix, args.month, c, raw_ref_file, int1_file, int1_cycle, tissue,
+                           args.tile, raw_only)
         for c in run)
     reg = pd.concat([r for r, _ in results if r is not None], ignore_index=True)
-    mark = pd.concat([m for _, m in results if m is not None], ignore_index=True)
+    marks = [m for _, m in results if m is not None]
+    mark = pd.concat(marks, ignore_index=True) if marks else pd.DataFrame(
+        columns=["cycle", "kind", "channel", "row", "col", "sharp_l1", "mean_l1"])
     ref0 = pd.DataFrame(ref_sharp, columns=["row", "col", "dapi_sharp", "dapi_mean"])
     reg.to_parquet(args.out / "registration_tiles.parquet", index=False)
     mark.to_parquet(args.out / "channel_sharpness_tiles.parquet", index=False)
@@ -367,7 +390,8 @@ def main() -> int:
     pd.DataFrame(rows).to_csv(args.out / "reporter_sharpness_vs_dapi.tsv", sep="\t", index=False)
 
     (args.out / "files.json").write_text(json.dumps(
-        {"reference_raw": str(raw0_file), "first_intermediate_cycle": int1_cycle, "month": args.month, "cycles": found,
+        {"reference_raw": str(raw0_file), "raw_reference_cycle": args.raw_reference_cycle,
+         "first_intermediate_cycle": int1_cycle, "month": args.month, "cycles": found,
          "shape": shape, "tile_px": args.tile, "pixel_um": PX_UM, "seconds": round(time.time() - started, 1)}, indent=2))
     maps(reg, ref0, shape, args.tile, args.out, args.prefix)
     if args.final is not None and args.final.exists():
