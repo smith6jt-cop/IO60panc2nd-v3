@@ -36,6 +36,18 @@ try {
 } catch (Throwable t) {
     result.error = t.toString()
 }
+// InstanSeg reads pixels through QuPath's OpenCV natives. On HiPerGator they load only with a newer
+// libstdc++ on LD_LIBRARY_PATH (hpg_env.sh); without it step 0 dies after the model loads (2026-10-01).
+try {
+    def cv = Class.forName('org.bytedeco.opencv.global.opencv_core')
+    org.bytedeco.javacpp.Loader.load(cv)
+    result.opencv_version = cv.getField('CV_VERSION').get(null)
+    result.opencv_ok = true
+} catch (Throwable t) {
+    result.opencv_ok = false
+    result.opencv_error = t.toString()
+    result.ok = false
+}
 out.getParentFile()?.mkdirs()
 out.text = new com.google.gson.GsonBuilder().setPrettyPrinting().serializeNulls().create().toJson(result)
 println "[djl_cuda_check] ${result.ok ? 'OK' : 'FAILED'}: ${result}"

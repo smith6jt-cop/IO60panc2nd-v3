@@ -24,6 +24,12 @@ export PY=${PY:-$BLUE/venv-v3/bin/python}                        # v3ctl.py need
 # `run_v3.sh --merge-provenance --images ...` adopted them (and the workstation merges ours likewise).
 export V3_SITE=hpg
 
+# QuPath 0.7 bundles OpenCV 4.11 (bytedeco 1.5.12), whose natives need GLIBCXX_3.4.30. HiPerGator's
+# RHEL 9 libstdc++ stops at 3.4.29, so every OpenCV call failed with "no jniopencv_core" (first real
+# jobs, 2026-10-01). $BLUE/lib_stdcxx holds ONE symlink, libstdc++.so.6 -> the miniforge copy
+# (3.4.34); nothing else from conda is put on the path.
+export LD_LIBRARY_PATH=$BLUE/lib_stdcxx${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
 # run_v3.sh working areas. flock is node-local on a cluster filesystem, so image locks ALSO use mkdir
 # on /blue (V3_SHARED_LOCKDIR): two jobs on different nodes can never process one image at once. A lock
 # left by a killed job is broken once squeue no longer lists that job.
