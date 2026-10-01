@@ -30,7 +30,7 @@
 #  postcondition  footer check: name(key=v1|v2;key2=v) -- see footer_template.groovy
 #  post           v3ctl.py post hook run after a passing step: cells_parquet | context_parquet | -
 step	passes	script	args	save	lane	heap_gb	threads	timeout_min	after	needs	on_external	overrides	postcondition	post	description
-preflight	I,C	scripts/v3/preflight.groovy	-	footer-saves	light	64	8	60	-	-	stale	-	preflight	-	channels, pixel size, one Tissue, each pLN disjoint from or contained in Tissue; drops stale Gal3Norm
+preflight	I,C	scripts/v3/preflight.groovy	-	footer-saves	light	64	8	15	-	-	stale	-	preflight	-	channels, pixel size, one Tissue, each pLN disjoint from or contained in Tissue; drops stale Gal3Norm
 1	I	scripts/v3/qupath/1_panc_objects_v3.groovy|scripts/1_panc_objects.groovy	-	footer-saves	light	96	16	240	-	preflight	keep	-	islets_present(classes=Islet|EndocrineCluster|EndocrineSingle)	-	islet objects (v3 method)
 4	I	scripts/v3/qupath/4_islet_expander_v3.groovy|scripts/4_islet_expander.groovy	-	footer-saves	light	64	16	120	1	-	keep	-	islet_bands(classes=Islet;bands=none)	-	names + UIDs, nearest-islet distances, Artifact overlap; no bands (peri-islet dropped 2026-09-29)
 0	C	scripts/v3/qupath/0_cell_detection_panc_v3.groovy	{CFG}	self-saves	gpu	96	12	90	-	preflight	keep	DUP_RESOLVE_MAX_FRACTION=0	regions_detected(classes=Tissue|pLN)	-	InstanSeg over every Tissue and every pLN region (GPU)
