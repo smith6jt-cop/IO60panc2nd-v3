@@ -86,13 +86,11 @@ def describe(d: Path, label: str) -> tuple[str, dict]:
     n_int = reg[["row", "col"]].drop_duplicates().shape[0]
     pc = per_cycle(reg, tile)
     pc.to_csv(d / "cycle_summary_interior.tsv", sep="\t", index=False)
-    sh = sharpness(d, reg)
-    c0 = sh.attrs["cycle0"]
-    c0_int = c0.merge(reg[["row", "col"]].drop_duplicates(), on=["row", "col"])
     text = f"## {label}\n\n"
     text += (f"Files: `{meta['reference_raw']}` (cycle 0 raw) and {len(meta['cycles']) - 1} later cycles, acquired "
              f"{meta['month'].replace(':', '-')}. {n_all:,} tissue tiles of {tile * ev.PX_UM:.0f} um; {n_int:,} fully covered tiles used below.\n\n")
-    names = {"raw_vs_raw0": "Raw DAPI of each cycle against cycle 0's raw DAPI (how far the slide really moved)",
+    ref_cycle = int(meta.get("raw_reference_cycle", 0))
+    names = {"raw_vs_raw0": f"Raw DAPI of each cycle against cycle {ref_cycle}'s raw DAPI (how far the slide really moved)",
              "int_vs_raw": "Intermediate DAPI against the same cycle's raw DAPI (what the instrument's registration applied)",
              "int_vs_int1": f"Intermediate DAPI against the first intermediate, cycle {meta['first_intermediate_cycle']} (left between processed cycles)"}
     cols = ["cycle", "shift_um_median", "shift_um_p95", "tiles_over_1um", "tiles_over_3um", "affine_max_um",
@@ -108,24 +106,27 @@ def describe(d: Path, label: str) -> tuple[str, dict]:
                        "worst_cycle": int(sub.loc[sub["shift_um_median"].idxmax(), "cycle"]),
                        "cycles_median_over_1um": int((sub["shift_um_median"] > 1).sum()), "cycles": int(len(sub)),
                        "worst_left_after_affine_median_um": float(sub["left_after_affine_um_median"].max())}
-    text += "### DAPI sharpness (Laplacian variance / mean^2; raw files)\n\n"
-    text += (f"Cycle 0: median {c0_int['dapi_sharp'].median():.3f}, 5th-95th percentile of tiles "
-             f"{c0_int['dapi_sharp'].quantile(0.05):.3f}-{c0_int['dapi_sharp'].quantile(0.95):.3f}.\n\n")
-    text += table(sh, ["cycle", "dapi_sharp_median", "ratio_to_cycle0_median", "tiles_below_half_of_cycle0"], 3) + "\n"
-    stats["cycle0_sharp_median"] = float(c0_int["dapi_sharp"].median())
-    stats["cycle0_sharp_p5"] = float(c0_int["dapi_sharp"].quantile(0.05))
-    stats["later_cycles_ratio_median"] = float(sh["ratio_to_cycle0_median"].median())
+    focus = d / "focus" / "dapi_focus_by_cycle.tsv"
+    if focus.exists():
+        f = pd.read_csv(focus, sep="\t")
+        text += ("### DAPI per raw cycle: contrast and fine detail\n\n"
+                 "contrast = (p95 - p5) / (p95 + p5) of a tile: how far the nuclei stand above their surroundings "
+                 "(a veil of background light lowers it). fine detail = var(Laplacian) / var: the share of the tile's "
+                 "contrast at the finest scale (pixel noise raises it, blur lowers it).\n\n")
+        text += table(f, ["cycle", "tiles", "contrast_median", "contrast_p5", "focus_median", "focus_p5", "focus_p95"], 3) + "\n"
+        c0row, later = f[f["cycle"] == 0].iloc[0], f[f["cycle"] > 0]
+        stats["contrast_cycle0_median"] = float(c0row["contrast_median"])
+        stats["contrast_cycle0_p5"] = float(c0row["contrast_p5"])
+        stats["contrast_later_cycles_median_range"] = [float(later["contrast_median"].min()), float(later["contrast_median"].max())]
+        stats["fine_detail_cycle0_median"] = float(c0row["focus_median"])
+        stats["fine_detail_later_cycles_median_range"] = [float(later["focus_median"].min()), float(later["focus_median"].max())]
     rep = d / "reporter_sharpness_vs_dapi.tsv"
-    if rep.exists():
+    if rep.exists() and rep.stat().st_size > 5:
         r = pd.read_csv(rep, sep="\t")
         r = r[r["channel"] != "DAPI"]
-        text += ("### Reporter channels where DAPI is least sharp vs sharpest (same cycle, raw files)\n\n"
-                 f"Ratio of the reporter's median tile sharpness in the least-sharp DAPI quarter to the sharpest quarter, "
-                 f"over {len(r)} cycle x channel pairs: median {r['ratio'].median():.2f}, "
-                 f"5th-95th percentile {r['ratio'].quantile(0.05):.2f}-{r['ratio'].quantile(0.95):.2f}; "
-                 f"Spearman correlation with DAPI sharpness: median {r['spearman_with_dapi_sharpness'].median():.2f}.\n\n")
-        stats["reporter_ratio_median"] = float(r["ratio"].median())
-        stats["reporter_spearman_median"] = float(r["spearman_with_dapi_sharpness"].median())
+        # NOT reported: Laplacian variance / mean^2 rises as a tile gets dimmer, so on reporter channels it
+        # measured brightness and tissue coverage, not blur (median ratio 4.9 in both 6457 and the control).
+        del r
     fin = d / "final_dapi_source.tsv"
     if fin.exists():
         f = pd.read_csv(fin, sep="\t").sort_values("ncc_with_final_dapi", ascending=False)
