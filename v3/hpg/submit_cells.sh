@@ -11,6 +11,9 @@
 #
 # Usage: submit_cells.sh --account clive|maigan --image "<exact image name>" [--out DIR] [--stage]
 #                        [--cpu-heap 160] [--cpu-cpus 20] [--start-within-min 5] [--gpu-type TYPE] [--dry-run]
+#                        [--profile pln]
+# --profile pln runs the image of the IO60pLN project (/home/smith6jt/IO60pLN, same path as on the
+# workstation) with its two script variants (scripts/v3/pln/); results go to that project's results/.
 # --gpu-type rtx_pro_6000|b200|l4 skips the order and takes that type: for re-running an image whose
 # segmentation failed on another type (a different GPU gives slightly different numbers).
 # --cpu-heap is step 2's JVM heap in GB (about 40 + 45 per million cells); the CPU job asks for
@@ -20,7 +23,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=hpg_env.sh
 source "$HERE/hpg_env.sh"
 
-ACCOUNT="" IMAGE="" OUT="$PROJ/results/v3/export" STAGE=0 CPU_HEAP=160 CPU_CPUS=20 WITHIN_MIN=5 DRY=0 FORCE_TYPE=""
+ACCOUNT="" IMAGE="" OUT="" STAGE=0 CPU_HEAP=160 CPU_CPUS=20 WITHIN_MIN=5 DRY=0 FORCE_TYPE="" PROFILE=""
 while (($#)); do
     case $1 in
         --account) ACCOUNT=$2; shift ;;
@@ -31,6 +34,7 @@ while (($#)); do
         --cpu-cpus) CPU_CPUS=$2; shift ;;
         --start-within-min) WITHIN_MIN=$2; shift ;;
         --gpu-type) FORCE_TYPE=$2; shift ;;
+        --profile) PROFILE=$2; shift ;;
         --dry-run) DRY=1 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
@@ -39,6 +43,15 @@ done
 [[ $ACCOUNT == clive || $ACCOUNT == maigan ]] || { echo "--account must be clive or maigan" >&2; exit 2; }
 [[ -n $IMAGE ]] || { echo "--image is required" >&2; exit 2; }
 QOS=$ACCOUNT                                   # the investment QOS has the account's name; never <account>-b
+variant_vars=""
+case $PROFILE in
+    "") : "${OUT:=$PROJ/results/v3/export}" ;;
+    pln)
+        PLN=/home/smith6jt/IO60pLN
+        : "${OUT:=$PLN/results/v3/export}"
+        variant_vars=",V3_PROJECT=$PLN/project.qpproj,V3_SCRIPT_PREFLIGHT=$V3DIR/pln/preflight_pln.groovy,V3_SCRIPT_0=$V3DIR/pln/0_cell_detection_pln.groovy" ;;
+    *) echo "--profile must be pln" >&2; exit 2 ;;
+esac
 CPU_MEM=$((CPU_HEAP + 24))gb
 
 # GPU types in the maintainer's order: partition:gres type
@@ -82,7 +95,7 @@ if [[ -z $pick ]]; then
 fi
 PART=${pick%%:*} TYP=${pick##*:}
 
-export_vars="ALL,IMAGE=$IMAGE,V3_OUT=$OUT,GPU_TYPE=$TYP,STAGE_TO_TMPDIR=$STAGE"
+export_vars="ALL,IMAGE=$IMAGE,V3_OUT=$OUT,GPU_TYPE=$TYP,STAGE_TO_TMPDIR=$STAGE$variant_vars"
 if ((DRY)); then
     echo "DRY RUN: $ACCOUNT '$IMAGE' -> $PART gpu:$TYP (expected start in ${pick_delay:-?} s); cpu mem $CPU_MEM; out $OUT"
     exit 0
@@ -92,6 +105,6 @@ gpu_job=$(sbatch --parsable "${GPU_COMMON[@]}" --partition="$PART" --gres="gpu:$
 # CPU partitions, fastest first. Measured 2026-10-01 for step 2 with 16-20 threads: hpg-turin 1,228-1,398
 # cells/s, hpg-milan 907, hpg-default (Rome) 354 -- the default list includes hpg-default, a 3-4x slower run.
 cpu_job=$(sbatch --parsable --account="$ACCOUNT" --qos="$QOS" --partition=hpg-turin,hpg-milan --cpus-per-task="$CPU_CPUS" --mem="$CPU_MEM" --time=04:45:00 \
-    --dependency="afterok:$gpu_job" --export="ALL,IMAGE=$IMAGE,V3_OUT=$OUT,STEP2_HEAP_GB=$CPU_HEAP" "$HERE/cells_cpu.sbatch")
+    --dependency="afterok:$gpu_job" --export="ALL,IMAGE=$IMAGE,V3_OUT=$OUT,STEP2_HEAP_GB=$CPU_HEAP$variant_vars" "$HERE/cells_cpu.sbatch")
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -Is)" "$ACCOUNT" "$PART" "$TYP" "$gpu_job" "$cpu_job" "$IMAGE" >> "$BLUE/work/submit/cells_jobs.tsv"
 echo "submitted: account=$ACCOUNT partition=$PART gpu=$TYP gpu_job=$gpu_job cpu_job=$cpu_job image='$IMAGE'"

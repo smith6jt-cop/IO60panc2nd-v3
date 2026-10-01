@@ -18,6 +18,12 @@ source /home/smith6jt/IO60panc2nd/scripts/v3/hpg/hpg_env.sh
 
 IMAGE=${IMAGE:?IMAGE (exact image name) is required}
 OUT=${V3_OUT:-$PROJ/results/v3/export}
+# another QuPath project (IO60pLN) and its script variants, set by submit_cells.sh --profile; every
+# call for an image must name the same variants, or a later step is refused ("script changed")
+VARIANT=()
+[[ -n ${V3_PROJECT:-} ]] && VARIANT+=(--project "$V3_PROJECT")
+[[ -n ${V3_SCRIPT_PREFLIGHT:-} ]] && VARIANT+=(--script "preflight=$V3_SCRIPT_PREFLIGHT")
+[[ -n ${V3_SCRIPT_0:-} ]] && VARIANT+=(--script "0=$V3_SCRIPT_0")
 STEPS=2,C_cells,C_geojson
 hpg_check_budget --steps "$STEPS" --margin-min 15
 threads=$((${SLURM_CPUS_PER_TASK:-24} - 4))     # leave a few cores for GC and I/O
@@ -28,7 +34,7 @@ hpg_log "steps $STEPS for '$IMAGE' on $(hostname) (account ${SLURM_JOB_ACCOUNT:-
 
 rc=0
 /usr/bin/time -v -o "$LOGDIR/time.txt" \
-    "$V3DIR/run_v3.sh" --steps "$STEPS" --images "$IMAGE" --out "$OUT" --lanes-cpu 1 "${RUN_V3_HPG_OPTS[@]}" \
+    "$V3DIR/run_v3.sh" --steps "$STEPS" --images "$IMAGE" --out "$OUT" --lanes-cpu 1 "${RUN_V3_HPG_OPTS[@]}" "${VARIANT[@]}" \
     --override "2:N_THREADS=$threads" --heap "2=$HEAP" \
     --run-id "hpg-cells-cpu-${SLURM_JOB_ID:-0}" || rc=$?
 hpg_log "run_v3.sh exit $rc; wall $(grep -m1 'Elapsed' "$LOGDIR/time.txt" | awk '{print $NF}'), max RSS $(grep -m1 'Maximum resident' "$LOGDIR/time.txt" | awk '{printf "%.1f GB", $NF/1e6}')"

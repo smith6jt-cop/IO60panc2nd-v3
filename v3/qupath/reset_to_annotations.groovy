@@ -10,11 +10,12 @@
  *   keep-cells  every annotation outside KEEP; detections stay            (outlines unchanged, so
  *               the existing cells are still the cells of this Tissue)
  *
- * It refuses to save unless exactly one Tissue annotation remains and, in keep-cells mode, the
+ * It refuses to save unless exactly one Tissue annotation remains (or, with a 4th argument "1+", at
+ * least one: an IO60pLN slide has one Tissue outline per node section) and, in keep-cells mode, the
  * detection count is unchanged. Success is the sentinel JSON, not QuPath's exit code.
  *
  *   QuPath script -p <private project copy> -i "<image>" \
- *       -a <strip-all|keep-cells> -a <sentinel.json> [-a "Tissue|pLN"] reset_to_annotations.groovy
+ *       -a <strip-all|keep-cells> -a <sentinel.json> [-a "Tissue|pLN" [-a 1+]] reset_to_annotations.groovy
  */
 
 import qupath.lib.io.GsonTools   // groovy-json is not bundled with QuPath 0.7
@@ -27,6 +28,9 @@ def sentinelFile = new File(a[1])
 Set<String> KEEP = ((a.size() > 2 && a[2]) ? a[2].split('\\|').collect { it.trim() } : ['Tissue', 'pLN']) as Set
 if (!(mode in ['strip-all', 'keep-cells']))
     throw new IllegalArgumentException("unknown mode '${mode}'")
+String tissueRule = (a.size() > 3 && a[3]) ? a[3].trim() : '1'
+if (!(tissueRule in ['1', '1+']))
+    throw new IllegalArgumentException("unknown Tissue rule '${tissueRule}' (1 or 1+)")
 
 def imageData = getCurrentImageData()
 def hierarchy = imageData.getHierarchy()
@@ -44,8 +48,10 @@ def result = [image: entry?.getImageName(), entry_id: entry?.getID(), mode: mode
               before: [annotations: countBy(annBefore), detections: detBefore],
               kept_ids: keptIds, ok: false, saved: false]
 
-if (kept.count { clsOf(it) == 'Tissue' } != 1) {
-    result.message = "expected exactly one Tissue annotation, found ${kept.count { clsOf(it) == 'Tissue' }}".toString()
+int nTissue = kept.count { clsOf(it) == 'Tissue' }
+result.tissue_rule = tissueRule
+if (tissueRule == '1' ? nTissue != 1 : nTissue < 1) {
+    result.message = "expected ${tissueRule == '1' ? 'exactly one' : 'at least one'} Tissue annotation, found ${nTissue}".toString()
 } else {
     if (mode == 'strip-all') removeDetections()
     hierarchy.removeObjects(drop, true)      // keepChildren: detections under a removed object move up
