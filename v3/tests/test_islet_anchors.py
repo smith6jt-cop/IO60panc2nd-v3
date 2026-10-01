@@ -417,15 +417,6 @@ def test_endocrine_mask_uses_the_floor():
     assert ia.endocrine_mask(f, st, 3.0, 5.0, 3.0).tolist() == [[False, True]]    # floor -20 + 90 = 70
 
 
-def test_occupied_threshold_finds_the_empty_space_valley():
-    rng = np.random.default_rng(21)
-    empty = rng.lognormal(np.log(15), 0.3, 300_000)
-    tissue = rng.lognormal(np.log(400), 0.3, 700_000)
-    thr = ia.occupied_threshold(np.r_[empty, tissue])
-    assert 30 < thr < 200
-    assert ia.occupied_threshold(tissue) == 0.0          # unimodal: everything is occupied
-
-
 # ---------------------------------------------------------------- analysis mask: union of Tissue minus pLN/Artifact
 
 def test_analysis_mask_unions_tissue_and_subtracts_excluded_classes():

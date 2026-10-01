@@ -29,16 +29,17 @@ at the export's 2 decimals, see annotation_signature) is stored with the anchors
 recomputes it from its hierarchy and refuses to run (ANCHOR_CHECK='error', default) or warns when they
 differ; --skip-existing recomputes an image whose hash or estimation parameters changed.
 
-Occupied tissue: the Tissue outline encloses empty space (lumens, fat, gaps: ~45-50% of the outline on
-6450panc and HDL112). A pixel is "occupied" when DAPI blurred at OCC_SIGMA_UM exceeds the valley
-between the empty-space and tissue peaks of its log density (all pixels when DAPI is unimodal), and
-not "no data" (all four detection channels exactly 0). Anchors and clamp models use occupied pixels:
-without this, the level-0 clamp fit describes empty space (6450panc CD99 mu 5 instead of 93 counts,
-GCG 4 instead of 102) and the unimodal INS/SST anchors drop 2-3x (6450panc INS 7.9 vs 16.6).
+No DAPI mask (v2.1). Until 2026-10-01 a pixel counted as "occupied tissue" only where blurred DAPI
+exceeded the valley between an empty-space and a tissue peak. The maintainer dropped it: the markers
+cover far more than nucleated cells, and the redrawn Tissue annotations already separate the block
+from the glass. Anchors and clamp models now use every analysis-mask pixel that carries data; only
+"no data" pixels (all four detection channels exactly 0) are left out. On an image whose outline
+encloses much empty space the level-0 clamp fit is therefore lower than v2.0's (6450panc, v2.0
+outline: CD99 mu 5 vs 93 counts with the mask).
 
-Two passes (v2.0): pass 1 estimates every channel on all occupied pixels; the detector rule at
+Two passes (v2.0): pass 1 estimates every channel on all data-carrying analysis pixels; the detector rule at
 (EXCL_TAU_CD99 3, EXCL_TAU_H 5, EXCL_FLOOR_K 3) then marks endocrine pixels, which are dilated by
-EXCL_DILATE_UM (25 um); pass 2 re-estimates on occupied pixels outside that mask. This removes the
+EXCL_DILATE_UM (25 um); pass 2 re-estimates on those pixels outside that mask. This removes the
 dependence of the anchor on islet prevalence and on the signal halo around islets (24 images: pass 2 is 3%
 lower at the median, >= 12% lower for a tenth of the (image, channel) pairs, up to 26%: 6534 SST).
 anchor_pass1 and excluded_fraction (12-32% of the mask) are recorded.
@@ -47,7 +48,7 @@ Columns per channel (see COLUMNS):
   anchor, bg_halfmax      right half-maximum of the tissue-background peak of the log density of the
                           blurred values (the UPPER substantial peak when bimodal); scale-equivariant.
   bg_logmode              that peak's mode.
-  clamp_fraction          fraction of exact zeros among occupied background pixels at FULL resolution
+  clamp_fraction          fraction of exact zeros among background pixels at FULL resolution
                           (level 0), where the scanner clamps negative values after subtracting offset
                           and autofluorescence (INS: up to ~0.8 on T1D/AAB images).
   clamp_mu, clamp_sigma   the latent background N(mu, sigma^2) in LINEAR counts, fitted to level-0
@@ -65,7 +66,7 @@ Columns per channel (see COLUMNS):
                           (Spearman(zero fraction, v1 INS anchor) = -0.92 over the 24 images).
   clamp_fit_ks            max |ECDF - model CDF| over [0, upper] (fit diagnostic).
   zero_fraction           exact zeros among mask pixels at the detector scale (after the blur; rare).
-  zero_fraction_l0        exact zeros among all sampled level-0 mask pixels (pass 1, occupied or not).
+  zero_fraction_l0        exact zeros among all sampled level-0 mask pixels (pass 1).
   anchor_l2_unblurred     the v1.0 estimator (half-max at ~2 um, no blur) on the v2.0 mask, for comparison.
   bg_smo_mean/std/median  SMO (KINTSUGI signal/smo.py port) at ~2 um, recorded as a diagnostic only
                           (it is not scale-robust at this resolution; see ISLETS.md). --no-smo skips it.
@@ -119,7 +120,7 @@ CHANNEL_ALIASES = {
     "DAPI": ("DAPI",),
 }
 
-METHOD_VERSION = "2.0"
+METHOD_VERSION = "2.1"          # 2.1 (2026-10-01): the DAPI occupied-tissue mask is gone
 RESOLUTION_UM = 1.0156        # the detector's RESOLUTION_UM (pyramid level 1)
 SIGMA_UM = 1.5                # the detector's SIGMA_UM
 GAUSS_TRUNCATE = 4.0          # kernel radius in sigmas (QuPath/OpenCV use a similar 4-sigma kernel)
@@ -127,10 +128,6 @@ TISSUE_CLASSES = ("Tissue",)
 EXCLUDE_CLASSES = ("pLN", "Artifact")   # the detector's EXCLUDE_CLASSES
 EDGE_MARGIN_UM = 5.0          # the detector clips 5 um inside the image edge
 HASH_DTYPES = {"annotation_hash": str, "params_hash": str, "method_version": str}   # read back as text, never numbers
-OCC_SIGMA_UM = 5.0            # DAPI blur for the occupied-tissue mask (bridges cytoplasm between nuclei)
-OCC_PEAK_MIN_HEIGHT = 0.05    # empty-space peak: >= 5% of the tissue peak's height ...
-OCC_PEAK_MIN_PROMINENCE = 0.02
-OCC_MAX_RATIO = 0.25          # ... and below a quarter of the tissue mode
 
 # two-pass exclusion: the detector's provisional tau values; k = 3 is one step below the detector's FLOOR_K (4),
 # so the exclusion is the more inclusive of the two (it also drops weaker speckle from the background sample)
@@ -175,7 +172,7 @@ COLUMNS = [
     "clamp_n", "clamp_upper", "clamp_fit_ks", "clamp_converged", "clamp_mu_pass1", "clamp_sigma_pass1",
     "clamp_fraction_pass1", "zero_fraction_l0",
     "anchor_l2_unblurred", "bg_smo_mean", "bg_smo_std", "bg_smo_median", "smo_bg_fraction",
-    "excl_tau_cd99", "excl_tau_h", "excl_floor_k", "excl_dilate_um", "occ_threshold_dapi",
+    "excl_tau_cd99", "excl_tau_h", "excl_floor_k", "excl_dilate_um",
     "exposure_ms", "responsivity", "filter_date", "signal_units", "xml_biomarker", "biomarker_match",
     "saturated_fraction", "channel_index", "entry_id", "image_path", "annotation_source",
     "n_tissue_polygons", "n_excluded_polygons", "excluded_area_mm2", "analysis_area_mm2",
@@ -432,7 +429,7 @@ def estimation_params(resolution_um: float = RESOLUTION_UM, sigma_um: float = SI
                 excl_tau_cd99=float(excl_tau_cd99), excl_tau_h=float(excl_tau_h),
                 excl_floor_k=float(excl_floor_k), excl_dilate_um=float(excl_dilate_um),
                 sample_max=int(sample_max), n_l0_tiles=int(n_l0_tiles), edge_margin_um=EDGE_MARGIN_UM,
-                occ_sigma_um=OCC_SIGMA_UM, clamp_upper_q=CLAMP_UPPER_Q, l0_tile=int(l0_tile), seed=SEED)
+                clamp_upper_q=CLAMP_UPPER_Q, l0_tile=int(l0_tile), seed=SEED)
 
 
 def params_hash(params: dict) -> str:
@@ -752,7 +749,7 @@ def positivity_threshold(anchor: float, tau: float, mu: float = np.nan, sigma: f
 
 
 # ----------------------------------------------------------------------------------------
-# Masks: dilation in um, occupied tissue, sampling
+# Masks: dilation in um, sampling
 # ----------------------------------------------------------------------------------------
 
 def dilate_um(mask: np.ndarray, radius_um: float, px_um: float, block: int = EXCL_BLOCK) -> np.ndarray:
@@ -794,28 +791,6 @@ def sample_mask_indices(mask: np.ndarray, n_max: int, seed: int = SEED) -> tuple
     got = rng.permutation(got)[:n_max]
     got.sort()
     return got // W, got % W
-
-
-def occupied_threshold(dapi_blur_values: np.ndarray, min_height: float = OCC_PEAK_MIN_HEIGHT,
-                       min_prominence: float = OCC_PEAK_MIN_PROMINENCE, max_ratio: float = OCC_MAX_RATIO) -> float:
-    """DAPI value separating empty space from tissue, else 0 (everything occupied).
-
-    Tissue mode = the tallest peak of the log density of blurred DAPI; empty space = the lowest peak
-    (>= min_height of the tallest, prominence >= min_prominence) below max_ratio x the tissue mode;
-    the threshold is the density minimum between them. More sensitive than the anchor's peak rule
-    because a 5 um blur shrinks the empty-space peak (6533: 11% of the tissue peak's height)."""
-    from scipy.signal import find_peaks
-    c, d = log_density(dapi_blur_values)
-    if d.size == 0:
-        return 0.0
-    top = float(d.max())
-    it = int(np.argmax(d))
-    pk, _ = find_peaks(d, height=min_height * top, prominence=min_prominence * top)
-    low = [p for p in pk if np.exp(c[p]) < max_ratio * np.exp(c[it])]
-    if not low:
-        return 0.0
-    il = int(min(low))
-    return float(np.exp(c[il + int(np.argmin(d[il:it + 1]))]))
 
 
 # ----------------------------------------------------------------------------------------
@@ -876,7 +851,7 @@ def compute_anchors(blurred: dict, mask: np.ndarray, occupied: np.ndarray, px_um
                     sample_max: int = SAMPLE_MAX, seed: int = SEED) -> dict:
     """Two-pass anchors and clamp models from blurred level arrays (channel -> float array).
 
-    mask: analysis mask; occupied: occupied-tissue mask (same shape; will be AND-ed with mask).
+    mask: analysis mask; occupied: the pixels that carry data (same shape; AND-ed with mask).
     Returns {channel: stats} plus '_meta' (fractions and counts). Pass 1 uses every occupied
     pixel; pass 2 excludes the endocrine mask of pass 1 dilated by excl_dilate_um.
     """
@@ -987,7 +962,6 @@ def anchors_for_image(im: ProjectImage, channels=CHANNELS, manual_dir: Path = DE
                       n_l0_tiles: int = L0_TILES, l0_tile: int = L0_TILE) -> list[dict]:
     """One row per channel for one project image (see the module docstring for the columns)."""
     import tifffile
-    from scipy.ndimage import gaussian_filter
     t0 = time.time()
     gj = tissue_geojson or (manual_dir / f"{im.tag}.geojson")
     if not gj.exists():
@@ -1013,7 +987,7 @@ def anchors_for_image(im: ProjectImage, channels=CHANNELS, manual_dir: Path = DE
         mask_full = analysis_mask(tissue_polys, excl_polys, lv.shape[-2:], dx, dy, full,
                                   EDGE_MARGIN_UM / im.pixel_um)
         sigma_px = sigma_um / level_um
-        margin = int(math.ceil(GAUSS_TRUNCATE * max(sigma_px, OCC_SIGMA_UM / level_um))) + 2
+        margin = int(math.ceil(GAUSS_TRUNCATE * sigma_px)) + 2
         rs, cs = _crop_to_mask(mask_full, margin)
         mask = np.ascontiguousarray(mask_full[rs, cs])
         del mask_full
@@ -1026,8 +1000,7 @@ def anchors_for_image(im: ProjectImage, channels=CHANNELS, manual_dir: Path = DE
                  excluded_area, ",".join(exclude_classes) or "-", ahash)
         n_pages = len(lv.pages)
         idx = {ch: resolve_channel(im.channels, ch) for ch in channels}
-        dapi_idx = resolve_channel(im.channels, "DAPI")
-        for ch, ci in list(idx.items()) + [("DAPI", dapi_idx)]:
+        for ch, ci in idx.items():
             if ci >= n_pages:
                 raise ValueError(f"{im.image}: channel {ch} index {ci} >= {n_pages} pages")
         blurred, zero_all, sat = {}, None, {}
@@ -1038,15 +1011,10 @@ def anchors_for_image(im: ProjectImage, channels=CHANNELS, manual_dir: Path = DE
             sat[ch] = float((a[mask] >= SATURATION).mean())
             blurred[ch] = gaussian_blur(a, sigma_px)
             del a
-        # occupied tissue: DAPI blurred at OCC_SIGMA_UM above the empty/tissue valley; no-data excluded
-        dapi = gaussian_filter(lv.pages[dapi_idx].asarray()[rs, cs].astype(np.float32),
-                               OCC_SIGMA_UM / level_um, mode="reflect", truncate=GAUSS_TRUNCATE)
-        rr, cc = sample_mask_indices(mask, min(sample_max, 2_000_000), SEED + 7)
-        occ_thr = occupied_threshold(dapi[rr, cc])
+        # no DAPI mask: every analysis pixel that carries data is background-eligible
         nodata = zero_all
-        occupied = (dapi >= occ_thr) & ~nodata
-        del dapi
-        # level-0 tiles for the clamp model (occupied analysis pixels, crop coordinates)
+        occupied = ~nodata
+        # level-0 tiles for the clamp model (data-carrying analysis pixels, crop coordinates)
         l0_tiles, zero_l0 = [], {}
         if with_l0:
             l0_tiles, _ = _sample_l0_tiles(s, idx, mask & occupied, rs, cs, dx, dy, n_tiles=n_l0_tiles, tile=l0_tile)
@@ -1054,7 +1022,7 @@ def anchors_for_image(im: ProjectImage, channels=CHANNELS, manual_dir: Path = DE
                 v0 = _l0_values(l0_tiles, ch, mask)
                 zero_l0[ch] = float(np.mean(v0 == 0)) if v0.size else np.nan
             if len(l0_tiles) < n_l0_tiles:
-                log.warning("%s: only %d of %d level-0 tiles fit inside the occupied mask", im.image,
+                log.warning("%s: only %d of %d level-0 tiles fit inside the analysis mask", im.image,
                             len(l0_tiles), n_l0_tiles)
         res = compute_anchors(blurred, mask, occupied, level_um, l0_tiles, two_pass=two_pass,
                               excl_tau_cd99=excl_tau_cd99, excl_tau_h=excl_tau_h, excl_floor_k=excl_floor_k,
@@ -1099,7 +1067,7 @@ def anchors_for_image(im: ProjectImage, channels=CHANNELS, manual_dir: Path = DE
                        excl_tau_h=excl_tau_h if two_pass else np.nan,
                        excl_floor_k=excl_floor_k if two_pass else np.nan,
                        excl_dilate_um=excl_dilate_um if two_pass else np.nan,
-                       occ_threshold_dapi=occ_thr, channel_index=ci, entry_id=im.entry_id,
+                       channel_index=ci, entry_id=im.entry_id,
                        image_path=str(im.path), annotation_source=str(gj),
                        n_tissue_polygons=len(tissue_polys), n_excluded_polygons=len(excl_polys),
                        excluded_area_mm2=excluded_area, analysis_area_mm2=n_mask * level_um ** 2 / 1e6,
@@ -1123,7 +1091,7 @@ def anchors_for_image(im: ProjectImage, channels=CHANNELS, manual_dir: Path = DE
                      ch, ci, row["anchor"], row["anchor_pass1"], row["anchor_l2_unblurred"],
                      row["clamp_fraction"], row["clamp_mu"], row["clamp_sigma"], row["clamp_fit_ks"],
                      excl_floor_k, row["clamp_mu"] + excl_floor_k * row["clamp_sigma"])
-    log.info("%s done in %.1f s (occupied %.2f, excluded %.3f of the mask; %d level-0 tiles)", im.image,
+    log.info("%s done in %.1f s (with data %.2f, excluded %.3f of the mask; %d level-0 tiles)", im.image,
              time.time() - t0, meta["n_occupied"] / max(n_mask, 1), meta["excluded_fraction"], len(l0_tiles))
     return rows
 
