@@ -41,11 +41,15 @@ print(re.sub(r"[^A-Za-z0-9._-]+", "_", e["imageName"]))' "$PROJ/project.qpproj" 
 
 run_driver() {   # run_driver <variant> <extra run_v3.sh args...>
     local v=$1; shift
+    local -a variant=()
+    # B's step 1 is the maintainer's script on EVERY call: a later step is refused when the plan names
+    # a different script than the one its prerequisite ran
+    [[ $v == B ]] && variant=(--script "1=$PROJ/scripts/1_panc_objects.groovy")
     # heaps sized to what these steps were measured to use (R_export 10 GB, step 4 <= 19 GB, preflight
     # <= 16 GB peak RSS), so the comparison fits beside the cells pass inside the host's 300 GB budget
     "$HERE/run_v3.sh" --project "$REV/$v/project.qpproj" --out "$REV/$v/out" --images "$ids_csv" \
         --lanes-light 1 --lanes-cpu 1 --mem-budget 300 \
-        --heap preflight=24 --heap 4=32 --heap R_export=32 --heap R_import=32 "$@"
+        --heap preflight=24 --heap 4=32 --heap R_export=32 --heap R_import=32 "${variant[@]}" "$@"
 }
 
 case $STAGE in
@@ -74,7 +78,7 @@ detect)
         run_driver A --steps preflight,1,4,R_export \
             --override "1:ANCHORS_CSV='$EXPORT/islet_anchors.csv'" --override "1:SAVE_CLASSIFIERS=false"
     else
-        run_driver B --steps preflight,1,4,R_export --script "1=$PROJ/scripts/1_panc_objects.groovy"
+        run_driver B --steps preflight,1,4,R_export
     fi ;;
 resolve)
     [[ -n $VARIANT ]] || { echo "resolve needs A or B" >&2; exit 2; }
@@ -109,13 +113,24 @@ EOF
     done ;;
 import)
     [[ -n $VARIANT ]] || { echo "import needs A or B" >&2; exit 2; }
-    run_driver "$VARIANT" --steps R_import,4 --force 4 ;;
+    # two runs, in this order: the driver follows the step table, where 4 precedes R_import, and the
+    # names and numbers must be given to the objects AFTER they are replaced by the cell-based ones
+    run_driver "$VARIANT" --steps R_import --force R_import
+    run_driver "$VARIANT" --steps 4 --force 4 ;;
 assemble)
     mkdir -p "$REV/review/data"
-    for d in classifiers scripts resources; do [[ -e $PROJ/$d ]] && ln -sfn "$PROJ/$d" "$REV/review/$d"; done
-    python3 - "$PROJ/project.qpproj" "$REV" $IDS <<'EOF'
+    # its OWN class list (never a link: QuPath writes classes.json when the project is saved, and a
+    # link would let a review session rewrite the master project's classes); scripts are read-only links
+    [[ -L $REV/review/classifiers ]] && unlink "$REV/review/classifiers"
+    mkdir -p "$REV/review/classifiers"
+    ln -sfn "$PROJ/scripts" "$REV/review/scripts"
+    python3 - "$PROJ/project.qpproj" "$REV" "$REF_CLASS" $IDS <<'EOF'
 import copy, json, os, shutil, sys
-src, rev, ids = sys.argv[1], sys.argv[2], sys.argv[3:]
+src, rev, ref, ids = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+classes = json.load(open(os.path.join(os.path.dirname(src), "classifiers", "classes.json")))
+if not any(c["name"] == ref for c in classes["pathClasses"]):
+    classes["pathClasses"].append({"name": ref, "color": -6908266})     # grey
+json.dump(classes, open(os.path.join(rev, "review", "classifiers", "classes.json"), "w"), indent=2)
 p = json.load(open(src)); entries = {str(e["entryID"]): e for e in p["images"]}
 label = {"A": "A threshold detector", "B": "B Islets2"}
 images = []
@@ -129,6 +144,7 @@ for i in ids:
             shutil.copy2(os.path.join(rev, v, "data", i, f), os.path.join(dst, f))
         images.append(e)
 p["images"] = images; p["lastID"] = max(e["entryID"] for e in images)
+p["uri"] = "file:" + os.path.join(rev, "review", "project.qpproj")
 json.dump(p, open(os.path.join(rev, "review", "project.qpproj"), "w"), indent=2)
 print("review project:", os.path.join(rev, "review", "project.qpproj"), [e["imageName"] for e in images])
 EOF

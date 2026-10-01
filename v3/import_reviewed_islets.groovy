@@ -35,7 +35,10 @@ if (!src.isFile()) {
                      message: "the file contains ${badClass.size()} Tissue/pLN objects; it must hold only reviewed islet-type objects".toString()]
     } else {
         hierarchy.removeObjects(old, true)          // keepChildren: detections move up, script 8 re-parents them
-        hierarchy.insertPathObjects(incoming)       // placed by ROI containment (under Tissue)
+        // added at the root, NOT insertPathObjects: placing each object by containment tests it against every
+        // detection under its parent -- 7,000 objects x 1 M cells did not finish in 8 min (measured 2026-10-01).
+        // Nothing here needs the nesting: script 8 parents the cells, and steps 3 and 4 work on geometry.
+        hierarchy.addObjects(incoming)
         fireHierarchyUpdate()
         def now = hierarchy.getAnnotationObjects().findAll { !(clsOf(it) in keep) }
         boolean idsMatch = (now.collect { it.getID().toString() } as Set) == (incoming.collect { it.getID().toString() } as Set)

@@ -10,7 +10,9 @@
 #   - no self-imposed cap on either investment (a job over the QOS limit is rejected: DenyOnLimit).
 #
 # Usage: submit_cells.sh --account clive|maigan --image "<exact image name>" [--out DIR] [--stage]
-#                        [--cpu-heap 160] [--cpu-cpus 20] [--start-within-min 5] [--dry-run]
+#                        [--cpu-heap 160] [--cpu-cpus 20] [--start-within-min 5] [--gpu-type TYPE] [--dry-run]
+# --gpu-type rtx_pro_6000|b200|l4 skips the order and takes that type: for re-running an image whose
+# segmentation failed on another type (a different GPU gives slightly different numbers).
 # --cpu-heap is step 2's JVM heap in GB (about 40 + 45 per million cells); the CPU job asks for
 # heap + 24 GB, so several fit one investment (clive 312 GB, maigan 625 GB).
 set -euo pipefail
@@ -18,7 +20,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=hpg_env.sh
 source "$HERE/hpg_env.sh"
 
-ACCOUNT="" IMAGE="" OUT="$PROJ/results/v3/export" STAGE=0 CPU_HEAP=160 CPU_CPUS=20 WITHIN_MIN=5 DRY=0
+ACCOUNT="" IMAGE="" OUT="$PROJ/results/v3/export" STAGE=0 CPU_HEAP=160 CPU_CPUS=20 WITHIN_MIN=5 DRY=0 FORCE_TYPE=""
 while (($#)); do
     case $1 in
         --account) ACCOUNT=$2; shift ;;
@@ -28,6 +30,7 @@ while (($#)); do
         --cpu-heap) CPU_HEAP=$2; shift ;;
         --cpu-cpus) CPU_CPUS=$2; shift ;;
         --start-within-min) WITHIN_MIN=$2; shift ;;
+        --gpu-type) FORCE_TYPE=$2; shift ;;
         --dry-run) DRY=1 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
@@ -58,7 +61,11 @@ start_delay_s() {
 gpu_limit=$(sacctmgr -nP show qos "$QOS" format=grptres | tr ',' '\n' | sed -n 's#^gres/gpu=##p' | head -1)
 own_gpu=$(squeue -h -A "$ACCOUNT" -u "$USER" -n v3_cells_gpu -t PENDING,RUNNING -o %i | wc -l)
 pick="" pick_delay=""
-if [[ -n $gpu_limit ]] && ((own_gpu >= gpu_limit)); then
+if [[ -n $FORCE_TYPE ]]; then
+    for entry in "${GPU_ORDER[@]}"; do [[ ${entry##*:} == "$FORCE_TYPE" ]] && pick=$entry; done
+    [[ -n $pick ]] || { echo "--gpu-type must be one of: ${GPU_ORDER[*]##*:}" >&2; exit 2; }
+    hpg_log "GPU type forced: ${pick##*:} on ${pick%%:*}"
+elif [[ -n $gpu_limit ]] && ((own_gpu >= gpu_limit)); then
     pick=${GPU_ORDER[0]}
     hpg_log "$ACCOUNT already has $own_gpu GPU job(s) for its limit of $gpu_limit: queueing on ${pick%%:*} (first choice)"
 fi
@@ -82,7 +89,9 @@ if ((DRY)); then
 fi
 mkdir -p "$BLUE/logs" "$BLUE/work/submit"
 gpu_job=$(sbatch --parsable "${GPU_COMMON[@]}" --partition="$PART" --gres="gpu:$TYP:1" --export="$export_vars" "$HERE/cells_gpu.sbatch")
-cpu_job=$(sbatch --parsable --account="$ACCOUNT" --qos="$QOS" --cpus-per-task="$CPU_CPUS" --mem="$CPU_MEM" --time=04:45:00 \
+# CPU partitions, fastest first. Measured 2026-10-01 for step 2 with 16-20 threads: hpg-turin 1,228-1,398
+# cells/s, hpg-milan 907, hpg-default (Rome) 354 -- the default list includes hpg-default, a 3-4x slower run.
+cpu_job=$(sbatch --parsable --account="$ACCOUNT" --qos="$QOS" --partition=hpg-turin,hpg-milan --cpus-per-task="$CPU_CPUS" --mem="$CPU_MEM" --time=04:45:00 \
     --dependency="afterok:$gpu_job" --export="ALL,IMAGE=$IMAGE,V3_OUT=$OUT,STEP2_HEAP_GB=$CPU_HEAP" "$HERE/cells_cpu.sbatch")
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -Is)" "$ACCOUNT" "$PART" "$TYP" "$gpu_job" "$cpu_job" "$IMAGE" >> "$BLUE/work/submit/cells_jobs.tsv"
 echo "submitted: account=$ACCOUNT partition=$PART gpu=$TYP gpu_job=$gpu_job cpu_job=$cpu_job image='$IMAGE'"
