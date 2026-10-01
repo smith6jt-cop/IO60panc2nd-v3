@@ -1322,6 +1322,13 @@ def entry_diff(a, b, path='') -> list:
     return [] if a == b else [{'path': path, 'project': a, 'now': b}]
 
 
+#: Project-entry fields that are QuPath's own bookkeeping, not what a step loads. `randomizedName` is the
+#: label for "mask image names"; the GUI re-rolls it for EVERY entry when it rewrites project.qpproj
+#: (measured 2026-10-01 15:06: all 26 entries changed, nothing else did), so a step that was running
+#: across a GUI save would otherwise be reported as having changed the image.
+QUPATH_BOOKKEEPING = frozenset({'randomizedName'})
+
+
 def drift_check(project: Path, im: Image, worker: Path, since_ns: int) -> dict | None:
     """Did the step change what QuPath will load next time? Headless runs without -s never write
     project.qpproj, but saveImageData() rewrites data/<id>/server.json whenever the image's server
@@ -1331,7 +1338,8 @@ def drift_check(project: Path, im: Image, worker: Path, since_ns: int) -> dict |
     wp = read_json(worker / 'project.qpproj')
     if wp is not None:
         we = next((e for e in wp.get('images', []) if e.get('entryID') == im.entry_id), None)
-        diffs = entry_diff(im.entry, we) if we is not None else [{'path': '<entry>', 'project': 'present', 'now': 'absent'}]
+        diffs = ([d for d in entry_diff(im.entry, we) if d['path'] not in QUPATH_BOOKKEEPING] if we is not None
+                 else [{'path': '<entry>', 'project': 'present', 'now': 'absent'}])
         if diffs:
             found['worker_project_entry'] = diffs
     sj = im.qpdata.parent / 'server.json'

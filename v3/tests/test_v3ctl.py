@@ -73,7 +73,8 @@ def test_steps_table_is_consistent():
     assert '2' in STEPS['3'].needs and '2' in STEPS['J_context'].needs                      # finding 5
     assert set(STEPS['8'].postcondition['params']['forbid']) >= {'Other: Gal3Norm', 'ROOT'}
     stale = {s for s, st in STEPS.items() if st.on_external == 'stale'}
-    assert stale == {'preflight', 'C_cells', 'C_geojson', '3', '8', 'J_context', 'J_annotations', 'J_islets', 'R_export'}
+    # 7 reads the image inside Tissue as drawn, so an accepted edit of the data file makes its objects stale too
+    assert stale == {'preflight', 'C_cells', 'C_geojson', '7', '3', '8', 'J_context', 'J_annotations', 'J_islets', 'R_export'}
 
 
 def test_steps_header_must_include_on_external(tmp_path):
@@ -118,10 +119,13 @@ def test_default_script_set_is_v3():
 
 
 def test_budget_sums_timeouts(capsys):
+    # the table's own timeouts (step 0 is one segmentation-only GPU job since 2026-10-01), plus the margin
+    total = STEPS['0'].timeout_min + 45
     v3ctl.main(['budget', '--steps', '0', '--margin-min', '45', '--format', 'slurm'])
-    assert capsys.readouterr().out.strip() == '08:45:00'
+    assert capsys.readouterr().out.strip() == f'{total // 60:02d}:{total % 60:02d}:00'
     v3ctl.main(['budget', '--passes', 'R,J', '--margin-min', '30'])
-    assert capsys.readouterr().out.strip() == str(60 + 240 + 240 + 240 + 120 + 120 + 30)
+    in_passes = [st.timeout_min for st in STEPS.values() if {'R', 'J'} & set(st.passes)]
+    assert len(in_passes) == 6 and capsys.readouterr().out.strip() == str(sum(in_passes) + 30)
 
 
 # ---- image selection (finding 3) --------------------------------------------------------------
@@ -300,6 +304,21 @@ def test_drift_record_blocks_unless_allowed(tmp_path):
     assert plan(im, ['1'], out, allow_drift=True)['state'] == 'ok'
 
 
+def test_a_rerolled_randomized_name_is_not_drift(tmp_path):
+    """The GUI re-rolls `randomizedName` on every entry when it saves the project; a step that was
+    running across that save did not change the image. Any other difference is still drift."""
+    q = make_image(tmp_path).qpdata
+    im = v3ctl.Image('img', 1, 'img', q, {'entryID': 1, 'imageName': 'img', 'randomizedName': 'the-name-after-the-gui-saved'})
+    worker = tmp_path / 'worker'
+    worker.mkdir()
+    entry = dict(im.entry, randomizedName='the-name-before-the-gui-saved')
+    v3ctl.write_json(worker / 'project.qpproj', {'images': [entry]})
+    assert v3ctl.drift_check(tmp_path / 'project.qpproj', im, worker, 0) is None
+    v3ctl.write_json(worker / 'project.qpproj', {'images': [dict(entry, imageName='renamed')]})
+    found = v3ctl.drift_check(tmp_path / 'project.qpproj', im, worker, 0)
+    assert [d['path'] for d in found['worker_project_entry']] == ['imageName']
+
+
 def test_sentinel_without_finish_is_not_done(tmp_path):
     """finding 11: a pass sentinel an orphaned QuPath wrote after the driver died was never validated."""
     im = make_image(tmp_path)
@@ -350,19 +369,19 @@ def test_accepted_external_edit_makes_readers_stale(tmp_path):
     exports, 3, 8, J_*, R_export), the reviewed steps (1, 4, 0, 2) do not."""
     im = make_image(tmp_path)
     out = tmp_path / 'out'
-    names = ['preflight', '1', '4', '0', '2', 'C_cells', 'C_geojson', '3', '8', 'J_context', 'J_annotations',
+    names = ['preflight', '1', '4', '0', '2', 'C_cells', 'C_geojson', '7', '3', '8', 'J_context', 'J_annotations',
              'J_islets', 'R_export']
     d = write_recs(out, *[rec(s, i + 1, im.qpdata) for i, s in enumerate(names)])
     for s in ('C_cells', 'J_context'):
         v3ctl.write_json(d / f'{s}.post.json', {'status': 'pass', 'attempt_id': f'a{names.index(s) + 1}', 'outputs': []})
     sel = [s for s in STEPS if s != 'R_import']
     assert set(actions(plan(im, sel, out)).values()) == {'skip'}
-    v3ctl.write_json(d / 'external.14.json', {'schema': 'run_v3.provenance/1', 'kind': 'external', 'step': 'external',
-                                              'status': 'pass', 'seq': 14, 'note': 'gate 1', 'rerun_from': [],
+    v3ctl.write_json(d / 'external.15.json', {'schema': 'run_v3.provenance/1', 'kind': 'external', 'step': 'external',
+                                              'status': 'pass', 'seq': 15, 'note': 'gate 1', 'rerun_from': [],
                                               'qpdata': {'before': v3ctl.stat_of(im.qpdata), 'after': v3ctl.stat_of(im.qpdata)}})
     p = plan(im, sel, out)
     a = actions(p)
-    assert {s for s, x in a.items() if x == 'run'} == {'preflight', 'C_cells', 'C_geojson', '3', '8', 'J_context',
+    assert {s for s, x in a.items() if x == 'run'} == {'preflight', 'C_cells', 'C_geojson', '7', '3', '8', 'J_context',
                                                          'J_annotations', 'J_islets', 'R_export'}
     assert {s for s, x in a.items() if x == 'skip'} == {'1', '4', '0', '2'}
     assert 'external edit was accepted' in reasons(p)['R_export']

@@ -8,7 +8,8 @@ the next ring end up more than half covered. Area alone therefore admits them. M
 cell means): non-member cells within 5 um of an object read INS 55 at the median against 9 far from
 any object, and the cells area alone admits beyond the real ones read INS 191 -- three to four times
 the level that 1 % of ordinary tissue reaches (45-66). So NO level drawn from ordinary tissue can
-turn them away on a hormone: 93 % of them clear it even after REDSEA correction.
+turn them away on a hormone: after REDSEA correction 93 % of the cells area admits still clear such a
+level on one of the four markers, and so do 75 % of the cells the top-marker rule turns away.
 
 So the area rule needs the second half the structure rule already has ("a vessel crossing a cell does
 not make the cell a vessel"): the cell's own markers must say it. This script asks that of every cell
