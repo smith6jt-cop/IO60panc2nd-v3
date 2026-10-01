@@ -12,7 +12,7 @@
 # kept beside them as a reference class so the two can be toggled.
 #
 # Usage: islet_comparison.sh <stage> [variant] --ids "5 33 37"
-#   stages: prepare | detect A|B | resolve A|B | import A|B | assemble | table
+#   stages: prepare | detect A|B | resolve A|B | import A|B | refresh A|B | assemble | table
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -115,6 +115,19 @@ import)
     [[ -n $VARIANT ]] || { echo "import needs A or B" >&2; exit 2; }
     # two runs, in this order: the driver follows the step table, where 4 precedes R_import, and the
     # names and numbers must be given to the objects AFTER they are replaced by the cell-based ones
+    run_driver "$VARIANT" --steps R_import --force R_import
+    run_driver "$VARIANT" --steps 4 --force 4 ;;
+refresh)
+    # the private copies were made right after segmentation; once the master's cells carry their
+    # measurements (same detections, step 2 only adds values) the copies take that file, so the cells
+    # in the review project can be read like those of any other image. The driver is told (the data
+    # file changed outside it), then the cell-based objects are imported again.
+    [[ -n $VARIANT ]] || { echo "refresh needs A or B" >&2; exit 2; }
+    for i in $IDS; do
+        cp -p "$PROJ/data/$i/data.qpdata" "$PROJ/data/$i/summary.json" "$REV/$VARIANT/data/$i/"
+        log "$VARIANT: data/$i replaced by the master's measured file ($(stat -c %s "$REV/$VARIANT/data/$i/data.qpdata") bytes)"
+    done
+    run_driver "$VARIANT" --accept-external --note "cells replaced by the master project's measured cells (same detections)" || true
     run_driver "$VARIANT" --steps R_import --force R_import
     run_driver "$VARIANT" --steps 4 --force 4 ;;
 assemble)
