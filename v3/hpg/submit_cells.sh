@@ -36,7 +36,7 @@ QOS=$ACCOUNT                                   # the investment QOS has the acco
 
 # GPU types in the maintainer's order: partition:gres type
 GPU_ORDER=(hpg-rtx6000:rtx_pro_6000 hpg-b200:b200 hpg-turin:l4)
-GPU_COMMON=(--account="$ACCOUNT" --qos="$QOS" --cpus-per-task=16 --mem=128gb --time=02:00:00)
+GPU_COMMON=(--account="$ACCOUNT" --qos="$QOS" --cpus-per-task=16 --mem=128gb --time=02:15:00)
 
 # seconds until the scheduler expects a typed single-partition GPU request to start; empty if refused
 start_delay_s() {
@@ -67,7 +67,7 @@ if ((DRY)); then
 fi
 mkdir -p "$BLUE/logs" "$BLUE/work/submit"
 gpu_job=$(sbatch --parsable "${GPU_COMMON[@]}" --partition="$PART" --gres="gpu:$TYP:1" --export="$export_vars" "$HERE/cells_gpu.sbatch")
-cpu_job=$(sbatch --parsable --account="$ACCOUNT" --qos="$QOS" --cpus-per-task=24 --mem="$CPU_MEM" --time=04:30:00 \
+cpu_job=$(sbatch --parsable --account="$ACCOUNT" --qos="$QOS" --cpus-per-task=24 --mem="$CPU_MEM" --time=04:45:00 \
     --dependency="afterok:$gpu_job" --export="ALL,IMAGE=$IMAGE,V3_OUT=$OUT" "$HERE/cells_cpu.sbatch")
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -Is)" "$ACCOUNT" "$PART" "$TYP" "$gpu_job" "$cpu_job" "$IMAGE" >> "$BLUE/work/submit/cells_jobs.tsv"
 echo "submitted: account=$ACCOUNT partition=$PART gpu=$TYP gpu_job=$gpu_job cpu_job=$cpu_job image='$IMAGE'"

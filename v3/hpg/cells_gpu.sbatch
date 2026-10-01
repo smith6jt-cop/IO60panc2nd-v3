@@ -12,7 +12,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128gb
-#SBATCH --time=02:00:00
+#SBATCH --time=02:15:00
 #SBATCH --output=/blue/maigan/smith6jt/IO60panc2nd_v3/logs/%x_%j.log
 set -euo pipefail
 # shellcheck source=hpg_env.sh
