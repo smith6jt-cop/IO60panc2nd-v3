@@ -1,16 +1,44 @@
-# v3 islets: endocrine objects (Drotar 2025 / ADIIDAS, CD99 primary)
+# v3 islets
 
-The v3 islet step replaces the trained `Islets2` pixel classifier and its size-adaptive erode/dilate with a
-rule-based definition that works across donors and disease: a pixel is endocrine when it is positive in CD99
-(primary) or in the hormone union INS/GCG/SST, **relative to that image's own tissue background**; objects are
-those pixels merged where they touch, sized by **mean caliper diameter** into `Islet` (>= 35 um),
-`EndocrineCluster` (10-35 um) and `EndocrineSingle` (<= 10 um). IAPP (failed QC) and HLA-A (disease-associated)
-are never used. PPY, CHGA and SYP are not in the panels.
+## The islet step (since 2026-10-01): the maintainer's script 1 with a per-image classifier
+
+The maintainer, 2026-10-01: "All I wanted was the pixel classifier to be more accurate and not filter out so many cells
+while adapting to batch effects that changed the classifier for each image. I could go through each image and do that
+manually, but I asked you to do it. Then the rest of the workflow works without major changes."
+
+| File | Role |
+|---|---|
+| `islet_classifier_fit.py` | writes `classifiers/pixel_classifiers/Islets_<tag>.json` for one image: CD99, INS, GCG, SST each against its own threshold for that image, fitted on the image's own cells; CD99 counts only within 6 um of a hormone pixel; closing, opening, 1 um margin. Its docstring is the method. (tests: `tests/test_islet_classifier_fit.py`) |
+| `qupath/1_panc_objects_perimage.groovy` | `scripts/1_panc_objects.groovy` with ONE line changed: it loads `Islets_<tag>` instead of `Islets2`. A test fails if anything else differs. |
+| `islet_classifiers.sh` | `fit` / `trial` (private copies; Islets2 first for comparison) / `check` / `montage` / `table` / `apply` (the master project, only after the maintainer has looked). `--nd` = the nine control donors the classifier is tested on. |
+| `islet_classifier_check.py`, `islet_classifier_montage.py` | QuPath's objects counted like the fit counts, beside Islets2's; pictures for looking without QuPath |
+| `islet_cell_test.py` | library only: the CD99 reference level and the highest-marker reader that the fit imports |
+
+Never write QuPath's own closing / minimum / maximum filters into a classifier file: `ImageOps.Filters.MorphOp` shares
+one kernel between threads and frees it with the tile that created it (QuPath 0.7.0). The classifiers use
+`op.filters.sum` + a threshold instead. The maintainer's structure thresholders carry the fault.
+
+Steps 3, 4 and 8 below are unchanged; with script 1 they see the class `Islet` only (`EndocrineCluster` and
+`EndocrineSingle` stay empty).
+
+## Retired 2026-10-01: the rule-based detector (sections 1 and 2 below describe it; its script is in git history)
+
+The text from here to the end of section 2 describes `qupath/1_panc_objects_v3.groovy` (`drotar_cd99`), which replaced
+the maintainer's classifier and erode / dilate with thresholds at multiples of each image's background. It was shown
+beside `Islets2` on three images and rejected ("Both islet methods fail. Too many false positives handling
+segmentations around endocrine-positive cells"), as was redrawing islets from cells (`resolve_islets_to_cells.py`,
+`islet_comparison.sh`, `islets_all.sh` -- removed, in git history). `islet_anchors.py` remains: its per-image
+background table is what the pictures use as their black level.
+
+The retired step replaced the trained `Islets2` pixel classifier and its size-adaptive erode/dilate with a
+rule-based definition: a pixel is endocrine when it is positive in CD99 (primary) or in the hormone union
+INS/GCG/SST, **relative to that image's own tissue background**; objects are those pixels merged where they touch,
+sized by **mean caliper diameter** into `Islet` (>= 35 um), `EndocrineCluster` (10-35 um) and `EndocrineSingle`
+(<= 10 um). IAPP (failed QC) and HLA-A (disease-associated) are never used. PPY, CHGA and SYP are not in the panels.
 
 Batch (user ruling 2026-09-28): batch is corrected at the expression level (UniFORM; Harmony for embeddings);
-nothing gates segmentation. The per-image background reference below IS the islet method, not a batch gate.
-Strata for checking it are acquisition group x disease (E1 Fusion 2.3.1 panel 1; E2 2.4.0 panel 1; E3 2.4.1
-panel 2, no ND donor; E4 metabolic 70-channel panel). The qptiff Responsivity date is not a batch.
+nothing gates segmentation. Strata for checking are acquisition group x disease (E1 Fusion 2.3.1 panel 1; E2 2.4.0
+panel 1; E3 2.4.1 panel 2, no ND donor; E4 metabolic 70-channel panel). The qptiff Responsivity date is not a batch.
 
 | File | Role |
 |---|---|

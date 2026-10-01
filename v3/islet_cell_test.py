@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """islet_cell_test.py -- is this cell itself positive for a marker that made the islet object?
 
+STATUS, 2026-10-01 evening: NOT A WORKFLOW STEP. The maintainer withdrew the approach this was written for (islets
+redrawn from cells, with a per-cell test): "All I wanted was the pixel classifier to be more accurate ...". What
+remains in use is the library below -- the CD99 reference level, the highest-marker reader, the object readers --
+which islet_classifier_fit.py imports to set each image's classifier. The command line still works and is kept for
+that reason only; nothing in the workflow calls it. The text below is the record of why it was written.
+
 WHY THIS EXISTS (maintainer, 2026-10-01, on the 3-image comparison: "Too many false positives handling
 segmentations around endocrine-positive cells"). An islet pixel object overshoots the islet: a bright
 cell lights the cells beside it, the detector's threshold sits far below that light, and the cells of
