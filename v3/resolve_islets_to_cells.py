@@ -26,8 +26,17 @@ Nothing here detects anything. Each pixel object keeps its identity:
                        enclosed by members are closed, so the outline is the outer boundary of the
                        cell set
     an object with no member is dropped (it was halo, debris, or cells without a nucleus)
-Nothing wider than the seam is bridged and no two pixel objects are merged. The area arithmetic is
-Senior's `build_crossed_fraction.covered_fraction` / `subdivide`, imported, not copied.
+No two pixel objects are merged. The area arithmetic is Senior's
+`build_crossed_fraction.covered_fraction` / `subdivide`, imported, not copied.
+
+GAPS BETWEEN MEMBERS (--close-um, default 0 = only the seam is closed). Once members are the cells that
+pass the cell test, an islet's own capillaries cut the outline: the cells along them are not members,
+so unless members enclose them completely they fall outside, and the islet comes apart into several
+parts (measured 2026-10-01, 6539, detector B: 147 of 572 objects in several parts; 320 turned-away
+cells sit in gaps up to 20 um wide against 1,530 in the outer ring). --close-um R closes gaps
+narrower than 2R between the SAME object's members (a closing: grow by R, shrink by R); it cannot
+reach beyond the members' own outer extent. Membership is not changed by it -- the cells in a closed
+gap are inside the outline, not members. Whether to close, and how wide, is the maintainer's ruling.
 
 The seam [measured 2026-10-01, 6523panc]: InstanSeg outlines are rectilinear on the model's 0.5 um
 grid (0.985 image px), and neighbouring cells are separated by one grid step or meet at corners --
@@ -110,6 +119,15 @@ def join_cells(cells: list, seam_px: float):
     return unary_union([closed, *cells])
 
 
+def close_gaps(geom, radius_px: float):
+    """`geom` with gaps narrower than 2 * radius_px between its parts and in its outline closed (a closing
+    with a disc). Never smaller than `geom`; radius 0 returns it unchanged."""
+    if radius_px <= 0 or geom.is_empty:
+        return geom
+    closed = geom.buffer(radius_px, quad_segs=6).buffer(-radius_px, quad_segs=6)
+    return unary_union([closed, geom])
+
+
 def outer_boundary(geom):
     """`geom` with every hole enclosed by it closed: the outer boundary of each part."""
     parts = list(geom.geoms) if geom.geom_type == "MultiPolygon" else [geom]
@@ -136,6 +154,8 @@ def main() -> int:
     ap.add_argument("--pixel-um", type=float, default=0.5078)
     ap.add_argument("--seam-px", type=float, default=1.0,
                     help="close gaps between member cells no wider than this (image px); 0 = plain union")
+    ap.add_argument("--close-um", type=float, default=0.0,
+                    help="close gaps narrower than twice this between one object's member cells (um); 0 = seam only")
     ap.add_argument("--cell-test", type=Path, default=None,
                     help="Parquet written by islet_cell_test.py (object_id, passes, why): with it, a member must also pass")
     ap.add_argument("--senior-typing", type=Path, default=SENIOR_TYPING)
@@ -235,7 +255,7 @@ def main() -> int:
         if not cells:
             dropped[o["class"]] += 1
             continue
-        geom = outer_boundary(join_cells(cells, args.seam_px))
+        geom = outer_boundary(close_gaps(join_cells(cells, args.seam_px), args.close_um / px))
         n_parts = len(geom.geoms) if geom.geom_type == "MultiPolygon" else 1
         multipart += n_parts > 1
         max_d = 2.0 * shapely.minimum_bounding_radius(geom) * px
@@ -266,6 +286,7 @@ def main() -> int:
             h.write(f"{cid}\t{oid}\t{frac:.6f}\t{total:.6f}\n")
     summary = {
         "objects_file": str(args.objects), "cells_file": str(args.cells), "pixel_um": px, "seam_px": args.seam_px,
+        "close_um": args.close_um,
         "majority_area": majority,
         "rule": ("cell with a nucleus, area fraction > majority_area inside one pixel object"
                  + (f", and: {test_rule.get('rule_text', 'passes the cell test')}" if test is not None else "")),

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from shapely.geometry import Polygon, box, mapping
+from shapely.geometry import MultiPolygon, Polygon, box, mapping
 from shapely.geometry.polygon import orient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -81,6 +81,24 @@ def test_outer_boundary_closes_enclosed_holes_only():
 
 
 # ---------------------------------------------------------------- the rule, end to end
+
+def test_gap_closing_joins_parts_across_a_narrow_gap_only():
+    # two cords of an islet 8 px apart (a capillary), and a third part 30 px away
+    cords = MultiPolygon([box(0, 0, 20, 10), box(0, 18, 20, 28), box(0, 58, 20, 68)])
+    assert r.close_gaps(cords, 0).equals(cords)
+    closed = r.close_gaps(cords, 5.0)                        # closes gaps narrower than 10 px
+    parts = sorted(closed.geoms, key=lambda g: g.bounds[1])
+    # the capillary is inside now; at its two open ends the fill curves in by r - sqrt(r^2 - (gap/2)^2) = 2 px
+    assert len(parts) == 2 and parts[0].contains(box(2.5, 11, 17.5, 17)) and not parts[0].contains(box(0.5, 13, 1.5, 15))
+    assert closed.buffer(1e-6).contains(cords)               # never smaller than the cells
+    assert closed.bounds == pytest.approx(cords.bounds, abs=1e-6)            # and never beyond their own extent
+    assert len(r.close_gaps(cords, 3.0).geoms) == 3          # 8 px is wider than 2 x 3
+
+
+def test_gap_closing_does_not_grow_a_convex_object():
+    one = box(0, 0, 30, 30)
+    assert r.close_gaps(one, 5.0).area == pytest.approx(one.area, rel=1e-3)
+
 
 def _cell(i, geom, nucleus=True):
     f = {"type": "Feature", "id": f"cell-{i}", "geometry": mapping(geom), "properties": {"objectType": "cell"}}

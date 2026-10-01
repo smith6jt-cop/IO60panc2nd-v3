@@ -18,7 +18,11 @@
 # classes ("Alt: <rule>"), so they can be compared in place. --values redsea reads the source workflow's
 # REDSEA-corrected values from <--redsea-root>/redsea/donor_id=<donor>/data_0.parquet.
 #
-# Usage: islet_comparison.sh <stage> [variant] --ids "5 33 37" [--rule R] [--alt-rules "R2 R3"]
+# --close-um R closes gaps narrower than 2R between one object's member cells in the CHOSEN rule's objects
+# (resolve_islets_to_cells.py --close-um); the same objects without closing are then added as the reference
+# class "Alt: gaps-not-closed". --reuse keeps a rule's objects that are already on disk.
+#
+# Usage: islet_comparison.sh <stage> [variant] --ids "5 33 37" [--rule R] [--alt-rules "R2 R3"] [--close-um R] [--reuse]
 #                            [--values raw|redsea --redsea-root DIR] [--review-dir NAME]
 #   stages: prepare | detect A|B | resolve A|B | import A|B | refresh A|B | assemble | table
 set -euo pipefail
@@ -28,7 +32,7 @@ source "$HERE/lib.sh"            # PROJ V3
 STAGE=${1:?stage}; shift
 VARIANT=""
 [[ ${1:-} == A || ${1:-} == B ]] && { VARIANT=$1; shift; }
-IDS="" RULE="" ALT_RULES="" VALUES=raw REDSEA_ROOT="" REVIEW_DIR=review
+IDS="" RULE="" ALT_RULES="" VALUES=raw REDSEA_ROOT="" REVIEW_DIR=review CLOSE_UM=0 REUSE=0
 while (($#)); do
     case $1 in
         --ids) IDS=$2; shift ;;
@@ -37,6 +41,8 @@ while (($#)); do
         --values) VALUES=$2; shift ;;
         --redsea-root) REDSEA_ROOT=$2; shift ;;
         --review-dir) REVIEW_DIR=$2; shift ;;
+        --close-um) CLOSE_UM=$2; shift ;;
+        --reuse) REUSE=1 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -111,6 +117,7 @@ resolve)
         [[ -s $out/pixel_objects/$tag.geojson ]] || cp -p "$out/reviewed_islets/$tag.geojson" "$out/pixel_objects/$tag.geojson"
         for r in $RULE $ALT_RULES; do
             d=$out/$(resolved_dir "$r"); mkdir -p "$d"
+            ((REUSE)) && [[ -s $d/$tag.summary.json && -s $d/$tag.geojson ]] && { log "$VARIANT $tag, rule $r: on disk, kept"; continue; }
             test_args=()
             if [[ $r != area ]]; then
                 values=(--values "$VALUES")
@@ -127,13 +134,28 @@ resolve)
                 --members "$d/$tag.members.tsv" --summary "$d/$tag.summary.json" > "$d/$tag.log"
             log "$VARIANT $tag, rule $r: $("$PYS" -c 'import json, sys; s = json.load(open(sys.argv[1])); print(s["pixel_objects"], "pixel objects ->", s["resolved_objects"], "cell-based objects,", s["member_cells"], "member cells")' "$d/$tag.summary.json")"
         done
+        chosen=$(resolved_dir "$RULE")
+        alts=$(for r in $ALT_RULES; do echo "$r=$(resolved_dir "$r")"; done)
+        if [[ $CLOSE_UM != 0 ]]; then
+            # the chosen rule again with the gaps between its members closed; same members, same cell test
+            d=$out/${chosen}_close$CLOSE_UM; mkdir -p "$d"
+            test_args=()
+            [[ $RULE != area ]] && test_args=(--cell-test "$out/$chosen/$tag.cell_test.parquet")
+            "$PYS" "$HERE/resolve_islets_to_cells.py" --objects "$out/pixel_objects/$tag.geojson" \
+                --cells "$EXPORT/cell_geojson/$tag.geojson" --out "$d/$tag.geojson" "${test_args[@]}" --close-um "$CLOSE_UM" \
+                --members "$d/$tag.members.tsv" --summary "$d/$tag.summary.json" > "$d/$tag.log"
+            log "$VARIANT $tag, rule $RULE with gaps closed ($CLOSE_UM um): $("$PYS" -c 'import json, sys; s = json.load(open(sys.argv[1])); print(s["resolved_objects"], "objects,", s["resolved_multipart"], "in several parts")' "$d/$tag.summary.json")"
+            alts="$alts gaps-not-closed=$chosen"
+            chosen=${chosen}_close$CLOSE_UM
+        fi
         # what gets imported: the chosen rule's objects, the pixel objects as a reference class, and each
-        # alternative rule's objects as its own reference class
-        "$PYS" - "$out" "$tag" "$REF_CLASS" "$(resolved_dir "$RULE")" $(for r in $ALT_RULES; do echo "$r=$(resolved_dir "$r")"; done) <<'EOF'
+        # alternative's objects as its own reference class
+        "$PYS" - "$out" "$tag" "$REF_CLASS" "$chosen" $alts <<'EOF'
 import json, sys, uuid
 out, tag, ref, chosen = sys.argv[1:5]
 alts = [a.split("=", 1) for a in sys.argv[5:]]
-ALT_COLOR = {"top-marker": [255, 0, 255], "cd99-level": [255, 255, 0], "cd99-or-hormone-top": [0, 255, 0], "area": [255, 255, 255]}
+ALT_COLOR = {"top-marker": [255, 0, 255], "cd99-level": [255, 255, 0], "cd99-or-hormone-top": [0, 255, 0], "area": [255, 255, 255],
+             "gaps-not-closed": [0, 200, 255]}
 P = json.load(open(f"{out}/pixel_objects/{tag}.geojson")); P = P["features"] if isinstance(P, dict) else P
 R = json.load(open(f"{out}/{chosen}/{tag}.geojson"))["features"]
 feats = list(R)
@@ -193,7 +215,8 @@ src, rev, ref, review, alt_rules, ids = sys.argv[1], sys.argv[2], sys.argv[3], s
 classes = json.load(open(os.path.join(os.path.dirname(src), "classifiers", "classes.json")))
 rgb = lambda r, g, b: (255 << 24 | r << 16 | g << 8 | b) - (1 << 32)        # QuPath's packed ARGB, signed
 extra = [(ref, -6908266)] + [(f"Alt: {r}", {"top-marker": rgb(255, 0, 255), "cd99-level": rgb(255, 255, 0),
-                                              "cd99-or-hormone-top": rgb(0, 255, 0), "area": rgb(255, 255, 255)}.get(r, rgb(255, 255, 255)))
+                                              "cd99-or-hormone-top": rgb(0, 255, 0), "area": rgb(255, 255, 255),
+                                              "gaps-not-closed": rgb(0, 200, 255)}.get(r, rgb(255, 255, 255)))
                              for r in alt_rules]
 for name, color in extra:
     if not any(c["name"] == name for c in classes["pathClasses"]):

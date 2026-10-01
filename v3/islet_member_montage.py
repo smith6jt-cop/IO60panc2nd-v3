@@ -106,6 +106,7 @@ def main() -> int:
     ap.add_argument("--levels-from", default="resolved_cd99-or-hormone-top",
                     help="the member set that fixes the white points (same for every figure of an image)")
     ap.add_argument("--per-stratum", type=int, default=3)
+    ap.add_argument("--strata", nargs="+", default=list(STRATA), choices=STRATA, help="size strata of the first rule's objects to draw from")
     ap.add_argument("--rows-per-figure", type=int, default=4)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--out", type=Path, required=True)
@@ -130,7 +131,7 @@ def main() -> int:
 
     rng = np.random.default_rng(args.seed)
     windows = []
-    for s_ in STRATA:
+    for s_ in [x for x in STRATA if x in args.strata]:
         pool = [i for i, f in enumerate(base["feats"]) if stratum(f["properties"]["measurements"]["n_cells"]) == s_]
         for i in sorted(rng.choice(pool, size=min(args.per_stratum, len(pool)), replace=False)):
             windows.append((s_, i))
