@@ -17,11 +17,13 @@
 #   run_v3.sh --accept-external --images id:<n> --note "islets reviewed" --out <export>
 # and pass J runs on it.
 #
-# Usage: islets_all.sh <detect|resolve|import|all> --detector A|B --rule <rule> --images "id:5,id:33,..."
+# Usage: islets_all.sh <detect|resolve|import|all> --detector A|B --rule <rule> --close-um <R> --images "id:5,id:33,..."
 #                      [--values raw|redsea] [--redsea-root DIR] [--lanes N]
 #   A = scripts/v3/qupath/1_panc_objects_v3.groovy (per-image thresholds; needs islet_anchors.csv)
 #   B = scripts/1_panc_objects.groovy (the maintainer's Islets2 script, unchanged)
 #   --rule    a rule of islet_cell_test.py (top-marker | cd99-level | cd99-or-hormone-top); no default
+#   --close-um  gaps narrower than twice this between one object's member cells are closed; 0 leaves them
+#             open. Required: it is one of the maintainer's rulings, so it has no default either
 #   --values  redsea (default) reads the source workflow's REDSEA-corrected cell means from
 #             <redsea-root>/redsea/donor_id=<donor>/data_0.parquet, so the source workflow must have run;
 #             raw reads QuPath's own cell means
@@ -31,13 +33,14 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/lib.sh"            # PROJ V3
 STAGE=${1:?stage}; shift
 DETECTOR="" IMAGES="" LANES=2      # step 1 peaks at 55-98 GB per image: two at a time beside an open QuPath
-RULE="" VALUES=redsea
+RULE="" VALUES=redsea CLOSE_UM=""
 SENIOR_DATA=/home/smith6jt/IO60panc2nd/Islet-Explorer-Senior-v3/core/phenocycler/data
 REDSEA_ROOT=$SENIOR_DATA
 while (($#)); do
     case $1 in
         --detector) DETECTOR=$2; shift ;;
         --rule) RULE=$2; shift ;;
+        --close-um) CLOSE_UM=$2; shift ;;
         --values) VALUES=$2; shift ;;
         --redsea-root) REDSEA_ROOT=$2; shift ;;
         --images) IMAGES=$2; shift ;;
@@ -49,6 +52,7 @@ done
 [[ $DETECTOR == A || $DETECTOR == B ]] || { echo "--detector A|B is required (the maintainer's choice; there is no default)" >&2; exit 2; }
 [[ -n $IMAGES ]] || { echo "--images is required" >&2; exit 2; }
 [[ $STAGE == detect || $STAGE == import || -n $RULE ]] || { echo "--rule is required (the maintainer's choice; there is no default)" >&2; exit 2; }
+[[ $STAGE == detect || $STAGE == import || -n $CLOSE_UM ]] || { echo "--close-um is required (0 = gaps left open; the maintainer's choice)" >&2; exit 2; }
 [[ $VALUES == raw || $VALUES == redsea ]] || { echo "--values raw|redsea" >&2; exit 2; }
 [[ $IMAGES != *6457* ]] || { echo "6457 is not processed" >&2; exit 2; }
 EXPORT=$V3/export
@@ -93,7 +97,7 @@ resolve() {
             > "$EXPORT/resolved_islets/$tag.cell_test.log"
         "$PYS" "$HERE/resolve_islets_to_cells.py" --objects "$EXPORT/pixel_objects/$tag.geojson" \
             --cells "$EXPORT/cell_geojson/$tag.geojson" --out "$EXPORT/resolved_islets/$tag.geojson" \
-            --cell-test "$EXPORT/resolved_islets/$tag.cell_test.parquet" \
+            --cell-test "$EXPORT/resolved_islets/$tag.cell_test.parquet" --close-um "$CLOSE_UM" \
             --members "$EXPORT/resolved_islets/$tag.members.tsv" --summary "$EXPORT/resolved_islets/$tag.summary.json" \
             > "$EXPORT/resolved_islets/$tag.log"
         cp -p "$EXPORT/resolved_islets/$tag.geojson" "$EXPORT/reviewed_islets/$tag.geojson"
