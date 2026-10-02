@@ -62,10 +62,12 @@ def main() -> int:
     new = S3.build_scale(donors, universe, n_per_donor=N_PER_DONOR, seed=SEED, ratio=RATIO)
     args.candidate.parent.mkdir(parents=True, exist_ok=True)
     new.reset_index().to_parquet(args.candidate, index=False)
-    # the same builder over Tissue cells only: for this table, the block rule is narrowed to the Tissue region
+    # the same builder over Tissue cells only: for this table, the block rule is narrowed to the Tissue region --
+    # every cell outside a pLN region. Since pass J a cell in an islet object reads core / cluster / single, not
+    # `tissue`; it is a Tissue cell all the same, so the test is "not pLN" (2026-10-02; it was `== "tissue"`).
     block_population = S3.AB.population
     try:
-        S3.AB.population = lambda donor, object_id, cell_region, root=None: np.asarray(cell_region, dtype=object) == "tissue"
+        S3.AB.population = lambda donor, object_id, cell_region, root=None: np.asarray(cell_region, dtype=object) != "pLN"
         tissue = S3.build_scale(donors, universe, n_per_donor=N_PER_DONOR, seed=SEED, ratio=RATIO)
     finally:
         S3.AB.population = block_population
@@ -76,7 +78,7 @@ def main() -> int:
     same_donors = None
     if frozen_donors:
         try:
-            S3.AB.population = lambda donor, object_id, cell_region, root=None: np.asarray(cell_region, dtype=object) == "tissue"
+            S3.AB.population = lambda donor, object_id, cell_region, root=None: np.asarray(cell_region, dtype=object) != "pLN"
             same_donors = S3.build_scale(frozen_donors, universe, n_per_donor=N_PER_DONOR, seed=SEED, ratio=RATIO)
         finally:
             S3.AB.population = block_population

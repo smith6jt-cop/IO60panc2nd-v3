@@ -259,6 +259,9 @@ def main() -> int:
     ap.add_argument("--expansion", choices=("outlines", "none"), required=True,
                     help="write the 20 um nearest-islet outlines, or none (the maintainer's ruling; no default)")
     ap.add_argument("--images", nargs="*", default=None, help="image tags; default every image in the Senior manifest")
+    ap.add_argument("--summary", type=Path, default=None,
+                    help="where to write this run's report (default <export>/typing_islets/adapter_summary.json); several "
+                         "runs over disjoint --images can work side by side when each has its own")
     args = ap.parse_args()
 
     manifest = {r["image_id"]: r for r in json.loads(
@@ -280,7 +283,7 @@ def main() -> int:
         print(f"{report['donor_id']:>5}: {report['islets']:>5,} islets {report['islets_by_qupath_class']}, "
               f"{report['expansions']:>5,} expansions; {report['rows']:>9,} cells, {report['parent_is_islet']:>7,} in an islet, "
               f"{report['parent_is_pln']:>7,} in a pLN  [{report['seconds']} s]", flush=True)
-    summary = args.export / "typing_islets" / "adapter_summary.json"
+    summary = args.summary or (args.export / "typing_islets" / "adapter_summary.json")
     summary.parent.mkdir(parents=True, exist_ok=True)
     summary.write_text(json.dumps({"islets_rule": args.islets, "expansion": args.expansion,
                                    "images": reports, "failed": failed}, indent=2))
