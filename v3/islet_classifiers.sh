@@ -184,7 +184,8 @@ apply)
         IFS=$'\t' read -r tag _ _ < <(describe "$i")
         [[ -s $PROJ/classifiers/pixel_classifiers/IsletHormone_$tag.json ]] || die "$tag: no IsletHormone_ classifier -- run markers (or fit)"
     done
-    "$HERE/run_v3.sh" --images "$ids_csv" --steps preflight,1,1_outlines,1b,4,R_export --script "1=$STEP1" --lanes-light "$LANES" --lanes-cpu 1 \
+    # --out is the v3 export tree: its records are the ones the master data files were last written under
+    "$HERE/run_v3.sh" --out "$EXPORT" --images "$ids_csv" --steps preflight,1,1_outlines,1b,4,R_export --script "1=$STEP1" --lanes-light "$LANES" --lanes-cpu 1 \
         --mem-budget 300 --heap preflight=24 --heap 1_outlines=32 --heap 4=32 --heap R_export=32 ;;
 table)
     "$PYS" - "$OUT/fit" $(for i in $IDS; do describe "$i" | cut -f1,3 | tr '\t' '='; done) <<'EOF'
