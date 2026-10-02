@@ -25,11 +25,14 @@
 #            pictures_master/<donor>.png. Nothing is written to the project by any of the three.
 #   apply    script 1 with the image's own classifier, then 1b and 4, on the master project. Only after the maintainer
 #            has looked.
+#   applied  what `apply` left on the master project, per image, read from the driver's own records
+#            ($V3/export/provenance): script 1's outlines, the Islets and Hormone Fragments 1b made of them, what it
+#            had to repair or skip, and the classes the export then found. Reads only.
 #
 # The test set is every non-diabetic / control donor (maintainer, 2026-10-01: "use all non-diabetic/controls for
 # testing classifier since the endocrine differences with disease interfere"):  --ids "$ND_IDS"
 #
-# Usage: islet_classifiers.sh <fit|markers|trial|check|montage|table|apply> --ids "<entry ids>" | --nd [--master] [--jobs N] [--lanes N]
+# Usage: islet_classifiers.sh <fit|markers|trial|check|montage|table|apply|applied> --ids "<entry ids>" | --nd [--master] [--jobs N] [--lanes N]
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -196,6 +199,31 @@ apply)
     # --out is the v3 export tree: its records are the ones the master data files were last written under
     "$HERE/run_v3.sh" --out "$EXPORT" --images "$ids_csv" --steps preflight,1,1_outlines,1b,4,R_export --script "1=$STEP1" --lanes-light "$LANES" --lanes-cpu 1 \
         --mem-budget 300 --heap preflight=24 --heap 1_outlines=32 --heap 4=32 --heap R_export=32 ;;
+applied)
+    "$PYS" - "$EXPORT/provenance" $(for i in $IDS; do describe "$i" | cut -f1,3 | tr '\t' '='; done) <<'EOF'
+import json, sys
+from pathlib import Path
+prov = Path(sys.argv[1])
+cols = ["donor", "script 1 outlines", "Islets", "one whole cell", "two or more", "outlines split", "pieces without a whole cell dropped",
+        "whole cells", "Hormone Fragments", "no cell and no hormone (removed)", "overlays repaired", "openings part by part", "openings skipped",
+        "exported classes", "1b status", "export status"]
+print(*cols, sep="\t")
+def latest(tag, step):          # the newest record of a step on this image, whichever site wrote it
+    found = sorted(prov.glob(f"{tag}/*/{step}.json"), key=lambda f: f.stat().st_mtime)
+    return json.loads(found[-1].read_text()) if found else None
+for item in sys.argv[2:]:
+    tag, donor = item.rsplit("=", 1)
+    b, e = latest(tag, "1b"), latest(tag, "R_export")
+    if b is None:
+        print(donor, "1b has not run", sep="\t"); continue
+    d = (b.get("step_result") or {}).get("details") or {}
+    by = ((e or {}).get("step_result") or {}).get("details", {}).get("by_class", {})
+    print(donor, d.get("islets_from_script_1"), d.get("islets"), d.get("islets_one_whole_cell"), d.get("islets_two_or_more"), d.get("outlines_split"),
+          d.get("pieces_without_a_whole_cell_dropped"), d.get("whole_cells"), d.get("hormone_fragments"), d.get("outlines_without_cell_or_hormone_removed"),
+          d.get("overlays_repaired"), d.get("openings_done_part_by_part"), d.get("openings_skipped"),
+          ", ".join(f"{k} {v}" for k, v in sorted(by.items())), b.get("status"), (e or {}).get("status", "not exported"), sep="\t")
+EOF
+    ;;
 table)
     "$PYS" - "$OUT/fit" "$SUF" $(for i in $IDS; do describe "$i" | cut -f1,3 | tr '\t' '='; done) <<'EOF'
 import json, sys
