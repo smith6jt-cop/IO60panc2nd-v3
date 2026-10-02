@@ -6,7 +6,7 @@
  *
  * v3 changes (nothing else differs from the original):
  *   - these columns are written on EVERY image, so all images share one schema:
- *         Islet, EndocrineCluster, EndocrineSingle, Artifact, pLN, Tissue
+ *         Islet, EndocrineCluster, EndocrineSingle, Hormone Fragment, Artifact, pLN, Tissue
  *     A class with no annotation on the image gets NaN on every detection (not a missing column).
  *     Any other non-ignored class present (e.g. Nerve, Blood_vessel) is still computed, as before.
  *   - no image / no detections throws instead of returning (under run_v3 an early return would also be a
@@ -50,7 +50,8 @@ evaluate(new File(buildFilePath(PROJECT_BASE_DIR, 'scripts', 'lib', 'common.groo
 
 // ==================== PARAMETERS ====================
 // Columns every image gets (NaN where the class is absent), in addition to any other class present.
-List<String> ENSURED_CLASSES = ['Islet', 'EndocrineCluster', 'EndocrineSingle', 'Artifact', 'pLN', 'Tissue']
+// 'Hormone Fragment' (step 1b, 2026-10-02): an image without one still gets the column, so the context tables agree
+List<String> ENSURED_CLASSES = ['Islet', 'EndocrineCluster', 'EndocrineSingle', 'Hormone Fragment', 'Artifact', 'pLN', 'Tissue']
 // ====================================================
 
 def imageData = getCurrentImageData()

@@ -63,7 +63,13 @@ def test_parse_postcondition():
 
 # ---- step table ---------------------------------------------------------------------------------
 def test_steps_table_is_consistent():
-    assert list(STEPS)[:3] == ['preflight', '1', '4']
+    assert list(STEPS)[:5] == ['preflight', '1', '1_outlines', '1b', '4']
+    # 1b (islet outlines erode to the cell outlines; maintainer, 2026-10-02) follows the islets, and the cells where
+    # this tree made them; pass J cannot run without it, the Islets2 comparison (1, 4, R_export) can.
+    # 1_outlines exports script 1's outlines first: once it has run on an image, 1b waits for it to be current.
+    assert STEPS['1b'].after == [('1', False), ('0', True), ('1_outlines', True)] and STEPS['1b'].on_external == 'keep'
+    assert STEPS['1_outlines'].after == [('1', False)] and STEPS['1_outlines'].save == 'never' and STEPS['1_outlines'].on_external == 'keep'
+    assert ('1b', False) in STEPS['3'].after and ('1b', False) in STEPS['8'].after and ('1b', True) in STEPS['4'].after
     assert STEPS['2'].overrides == {'N_THREADS': '24'}
     s0 = STEPS['0']
     assert s0.save == 'self-saves' and s0.lane == 'gpu' and s0.args == ['{CFG}']
@@ -88,7 +94,8 @@ def test_steps_header_must_include_on_external(tmp_path):
 def test_selection_is_topological():
     order = v3ctl.selected_steps(STEPS, ['R', 'J'], [])
     assert order.index('R_import') < order.index('3') < order.index('J_context')
-    assert v3ctl.selected_steps(STEPS, ['I', 'C'], []) == ['preflight', '1', '4', '0', '2', 'C_cells', 'C_geojson']
+    assert v3ctl.selected_steps(STEPS, ['I', 'C'], []) == ['preflight', '1', '1_outlines', '0', '1b', '4', '2', 'C_cells', 'C_geojson']
+    assert v3ctl.selected_steps(STEPS, ['I'], []) == ['preflight', '1', '1_outlines', '1b', '4']
     with pytest.raises(SystemExit):
         v3ctl.selected_steps(STEPS, ['Q'], [])
 
@@ -233,10 +240,15 @@ def test_leftover_bkp_is_named(tmp_path):
 def test_done_skip_and_downstream_of_forced(tmp_path):
     im = make_image(tmp_path)
     out = tmp_path / 'out'
-    write_recs(out, rec('preflight', 1, im.qpdata), rec('1', 2, im.qpdata), rec('4', 3, im.qpdata))
+    write_recs(out, rec('preflight', 1, im.qpdata), rec('1', 2, im.qpdata), rec('1_outlines', 3, im.qpdata), rec('1b', 4, im.qpdata),
+               rec('4', 5, im.qpdata))
     sel = v3ctl.selected_steps(STEPS, ['I'], [])
-    assert actions(plan(im, sel, out)) == {'preflight': 'skip', '1': 'skip', '4': 'skip'}
-    assert actions(plan(im, sel, out, force={'1'})) == {'preflight': 'skip', '1': 'run', '4': 'run'}
+    assert actions(plan(im, sel, out)) == {'preflight': 'skip', '1': 'skip', '1_outlines': 'skip', '1b': 'skip', '4': 'skip'}
+    assert actions(plan(im, sel, out, force={'1'})) == {'preflight': 'skip', '1': 'run', '1_outlines': 'run', '1b': 'run', '4': 'run'}
+    # script 1 re-ran and its outlines were not exported again: 1b alone may not erode them away unseen
+    write_recs(out, rec('1', 6, im.qpdata))
+    p = plan(im, ['1b'], out)
+    assert actions(p) == {'1b': 'blocked'} and '1_outlines' in reasons(p)['1b']
 
 
 def test_stale_when_upstream_reran(tmp_path):
@@ -262,11 +274,28 @@ def test_step3_needs_step2(tmp_path):
     """finding 5: pass J may not start on an image whose step 2 is not done (e.g. running in another job)."""
     im = make_image(tmp_path)
     out = tmp_path / 'out'
-    write_recs(out, rec('preflight', 1, im.qpdata), rec('1', 2, im.qpdata), rec('4', 3, im.qpdata), rec('0', 4, im.qpdata))
+    write_recs(out, rec('preflight', 1, im.qpdata), rec('1', 2, im.qpdata), rec('0', 3, im.qpdata), rec('1b', 4, im.qpdata),
+               rec('4', 5, im.qpdata))
     p = plan(im, ['3', 'J_context'], out)
     assert actions(p)['3'] == 'blocked' and 'needs 2' not in reasons(p)['3'] and '2 (never ran)' in reasons(p)['3']
-    write_recs(out, rec('2', 5, im.qpdata))
+    write_recs(out, rec('2', 6, im.qpdata))
     assert actions(plan(im, ['3'], out))['3'] == 'run'
+
+
+def test_pass_j_needs_the_islet_outlines_on_the_cells(tmp_path):
+    """Signed distance and parenting read the islets: they may not run on outlines step 1b has not eroded."""
+    im = make_image(tmp_path)
+    out = tmp_path / 'out'
+    write_recs(out, rec('preflight', 1, im.qpdata), rec('1', 2, im.qpdata), rec('0', 3, im.qpdata), rec('2', 4, im.qpdata),
+               rec('4', 5, im.qpdata))
+    p = plan(im, ['3', '8'], out)
+    assert actions(p)['3'] == 'blocked' and '1b (never ran)' in reasons(p)['3']
+    write_recs(out, rec('1b', 6, im.qpdata), rec('4', 7, im.qpdata))
+    assert actions(plan(im, ['3', '8'], out)) == {'3': 'run', '8': 'run'}
+    # re-making the cells makes the eroded outlines stale: they ended on the old cells
+    write_recs(out, rec('0', 8, im.qpdata))
+    p = plan(im, ['1b'], out)
+    assert actions(p)['1b'] == 'run' and 'stale' in reasons(p)['1b']
 
 
 def test_post_hook_and_outputs_are_part_of_done(tmp_path):
@@ -288,10 +317,10 @@ def test_post_hook_and_outputs_are_part_of_done(tmp_path):
 def test_optional_dependency_only_counts_once_it_ran(tmp_path):
     im = make_image(tmp_path)
     out = tmp_path / 'out'
-    write_recs(out, rec('preflight', 1, im.qpdata), rec('1', 2, im.qpdata), rec('4', 3, im.qpdata),
-               rec('0', 4, im.qpdata), rec('2', 5, im.qpdata), rec('3', 6, im.qpdata))
+    write_recs(out, rec('preflight', 1, im.qpdata), rec('1', 2, im.qpdata), rec('0', 3, im.qpdata), rec('1b', 4, im.qpdata),
+               rec('4', 5, im.qpdata), rec('2', 6, im.qpdata), rec('3', 7, im.qpdata))
     assert actions(plan(im, ['3'], out)) == {'3': 'skip'}
-    write_recs(out, rec('R_import', 7, im.qpdata))              # reviewed islets imported after 3 ran
+    write_recs(out, rec('R_import', 8, im.qpdata))              # reviewed islets imported after 3 ran
     assert actions(plan(im, ['3'], out)) == {'3': 'run'}
 
 
@@ -369,21 +398,21 @@ def test_accepted_external_edit_makes_readers_stale(tmp_path):
     exports, 3, 8, J_*, R_export), the reviewed steps (1, 4, 0, 2) do not."""
     im = make_image(tmp_path)
     out = tmp_path / 'out'
-    names = ['preflight', '1', '4', '0', '2', 'C_cells', 'C_geojson', '7', '3', '8', 'J_context', 'J_annotations',
+    names = ['preflight', '1', '1_outlines', '0', '1b', '4', '2', 'C_cells', 'C_geojson', '7', '3', '8', 'J_context', 'J_annotations',
              'J_islets', 'R_export']
     d = write_recs(out, *[rec(s, i + 1, im.qpdata) for i, s in enumerate(names)])
     for s in ('C_cells', 'J_context'):
         v3ctl.write_json(d / f'{s}.post.json', {'status': 'pass', 'attempt_id': f'a{names.index(s) + 1}', 'outputs': []})
     sel = [s for s in STEPS if s != 'R_import']
     assert set(actions(plan(im, sel, out)).values()) == {'skip'}
-    v3ctl.write_json(d / 'external.15.json', {'schema': 'run_v3.provenance/1', 'kind': 'external', 'step': 'external',
-                                              'status': 'pass', 'seq': 15, 'note': 'gate 1', 'rerun_from': [],
+    v3ctl.write_json(d / 'external.17.json', {'schema': 'run_v3.provenance/1', 'kind': 'external', 'step': 'external',
+                                              'status': 'pass', 'seq': 17, 'note': 'gate 1', 'rerun_from': [],
                                               'qpdata': {'before': v3ctl.stat_of(im.qpdata), 'after': v3ctl.stat_of(im.qpdata)}})
     p = plan(im, sel, out)
     a = actions(p)
     assert {s for s, x in a.items() if x == 'run'} == {'preflight', 'C_cells', 'C_geojson', '7', '3', '8', 'J_context',
                                                          'J_annotations', 'J_islets', 'R_export'}
-    assert {s for s, x in a.items() if x == 'skip'} == {'1', '4', '0', '2'}
+    assert {s for s, x in a.items() if x == 'skip'} == {'1', '1_outlines', '1b', '4', '0', '2'}       # the review is OF these steps' output
     assert 'external edit was accepted' in reasons(p)['R_export']
 
 

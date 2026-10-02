@@ -441,6 +441,57 @@ def classifier_json(thresholds: dict, *, sigma_um: float = SIGMA_UM, seed_px: in
     }
 
 
+def marker_json(thresholds: dict, *, sigma_um: float = SIGMA_UM, px_um: float = CLASSIFIER_UM) -> dict:
+    """The hormone marker's own outline as a QuPath pixel classifier: a hormone above the image's threshold, and
+    nothing else -- no CD99, no closing, no margin. qupath/1b_islet_outlines_to_cells.groovy gives a Hormone Fragment
+    this outline ("the object erodes to marker outline", maintainer, 2026-10-02). Same input, same smoothing and the
+    same thresholds as the islet classifier, so it is that classifier's hormone branch before any shaping."""
+    hormones = [c for c in HORMONES if thresholds.get(c) is not None]
+    if not hormones:
+        raise SystemExit("no hormone carries a threshold: refusing to write a marker classifier")
+    sigma_px = sigma_um / px_um
+    ops = [{"type": "op.core.multiply", "values": [1.0 / float(thresholds[c]) for c in hormones]},
+           {"type": "op.filters.gaussian", "sigmaX": sigma_px, "sigmaY": sigma_px}]
+    if len(hormones) > 1:
+        ops.append({"type": "op.channels.maximum"})
+    ops += [{"type": "op.threshold.constant", "thresholds": [1.0]}, {"type": "op.core.convert", "pixelType": "UINT8"}]
+    size = {"value": px_um, "unit": "µm"}
+    return {
+        "pixel_classifier_type": "OpenCVPixelClassifier",
+        "metadata": {
+            "inputPadding": 0,
+            "inputResolution": {"pixelWidth": size, "pixelHeight": size, "zSpacing": {"value": 1.0, "unit": "z-slice"},
+                                "timeUnit": "SECONDS", "timepoints": []},
+            "inputWidth": 512, "inputHeight": 512, "inputNumChannels": 3,
+            "outputType": "CLASSIFICATION", "outputChannels": [],
+            "classificationLabels": {"0": {"name": "Ignore*", "color": [180, 180, 180]}, "1": {"name": "Hormone Fragment", "color": [255, 160, 0]}},
+        },
+        "op": {"type": "data.op.channels", "colorTransforms": [{"channelName": c} for c in hormones],
+               "op": {"type": "op.core.sequential", "ops": ops}},
+    }
+
+
+def marker_classifier_path(islet_classifier: Path) -> Path:
+    """IsletHormone_<tag>.json beside Islets_<tag>.json (the name 1b_islet_outlines_to_cells.groovy loads)."""
+    name = islet_classifier.name
+    if not name.startswith("Islets_"):
+        raise SystemExit(f"{islet_classifier}: expected a file named Islets_<tag>.json")
+    return islet_classifier.with_name("IsletHormone_" + name[len("Islets_"):])
+
+
+def marker_mask(smoothed: dict, thresholds: dict) -> np.ndarray:
+    """What marker_json classifies as hormone, on the classifier's grid (for checking QuPath's fragments)."""
+    mask = None
+    for c in HORMONES:
+        if thresholds.get(c) is None:
+            continue
+        above = smoothed[c] > float(thresholds[c])
+        mask = above if mask is None else (mask | above)
+    if mask is None:
+        raise SystemExit("no hormone carries a threshold: there is no marker outline")
+    return mask
+
+
 # ----------------------------------------------------------------------------------------------- one image
 
 def strata(counts: np.ndarray) -> dict:
@@ -511,12 +562,14 @@ def load_cells(cells: Path, redsea: Path, structures: Path | None, tag: str | No
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tag", required=True)
-    ap.add_argument("--image", type=Path, required=True)
-    ap.add_argument("--cells", type=Path, required=True)
-    ap.add_argument("--redsea", type=Path, required=True, help="data/redsea/donor_id=<d>/data_0.parquet of the source workflow")
+    ap.add_argument("--image", type=Path, default=None)
+    ap.add_argument("--cells", type=Path, default=None)
+    ap.add_argument("--redsea", type=Path, default=None, help="data/redsea/donor_id=<d>/data_0.parquet of the source workflow")
     ap.add_argument("--structures", type=Path, default=None, help="<export>/structures")
     ap.add_argument("--classifier", type=Path, required=True, help="<project>/classifiers/pixel_classifiers/Islets_<tag>.json")
     ap.add_argument("--report", type=Path, required=True)
+    ap.add_argument("--marker-only", action="store_true",
+                    help="write only IsletHormone_<tag>.json, from the thresholds of an existing --report (no fit, no image read)")
     ap.add_argument("--mask", type=Path, default=None, help="also save the classifier's mask (npy, the classifier's grid)")
     ap.add_argument("--objects", type=Path, default=None, help="also save the emulated script-1 objects (npy label image)")
     ap.add_argument("--sigma-um", type=float, default=SIGMA_UM)
@@ -528,6 +581,16 @@ def main() -> int:
     ap.add_argument("--senior-typing", type=Path, default=ict.SENIOR_TYPING)
     args = ap.parse_args()
     t0 = time.time()
+    marker_file = marker_classifier_path(args.classifier)
+    if args.marker_only:
+        report = json.loads(args.report.read_text())
+        marker_file.write_text(json.dumps(marker_json(report["thresholds"], sigma_um=report.get("sigma_um", SIGMA_UM)), indent=2))
+        print(f"{args.tag}: {marker_file.name} written from {args.report.name} (hormones: "
+              f"{[c for c in HORMONES if report['thresholds'].get(c) is not None]})")
+        return 0
+    for name in ("image", "cells", "redsea"):
+        if getattr(args, name) is None:
+            ap.error(f"--{name} is required (unless --marker-only)")
     chain = {"seed_px": args.seed_px, "close_px": args.close_px, "open_px": args.open_px, "margin_px": args.margin_px}
 
     base, values, x_um, y_um, eligible, in_structure, other_markers, quantile, not_in_panel = load_cells(
@@ -547,8 +610,9 @@ def main() -> int:
 
     args.classifier.parent.mkdir(parents=True, exist_ok=True)
     args.classifier.write_text(json.dumps(classifier_json(thresholds, sigma_um=args.sigma_um, **chain), indent=2))
+    marker_file.write_text(json.dumps(marker_json(thresholds, sigma_um=args.sigma_um), indent=2))
     report = {
-        "tag": args.tag, "classifier": str(args.classifier), "image": str(args.image), "cells_file": str(args.cells),
+        "tag": args.tag, "classifier": str(args.classifier), "marker_classifier": str(marker_file), "image": str(args.image), "cells_file": str(args.cells),
         "redsea_file": str(args.redsea), "thresholds": thresholds,
         "channels_not_used": [c for c in CHANNELS if thresholds[c] is None],
         "sigma_um": args.sigma_um, **chain, "miss_weight": args.miss_weight, "resolution_um": CLASSIFIER_UM,

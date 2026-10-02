@@ -1,22 +1,41 @@
 # v3 islets
 
-## The islet step (since 2026-10-01): the maintainer's script 1 with a per-image classifier
+## The islet step (since 2026-10-01): the maintainer's script 1 with a per-image classifier, then the cell outlines
 
 The maintainer, 2026-10-01: "All I wanted was the pixel classifier to be more accurate and not filter out so many cells
 while adapting to batch effects that changed the classifier for each image. I could go through each image and do that
 manually, but I asked you to do it. Then the rest of the workflow works without major changes."
 
+The maintainer, 2026-10-02, after looking at the outlines on the nine control images: "The islet outlines overall look
+very good, but make the following changes: All outlines need to erode while stopping at nearest cell segmentation
+outline. Distinction between hormone single-cell and new class "Hormone Fragment" by cell segmentation outline: if one
+whole cell fits in islet outline, use cell segmentation; if not, label as hormone fragment, the object erodes to marker
+outline and markers do not contribute to cell type."
+
+So the islet step is two scripts: **1** (their script, one line changed) draws the outlines; **1b** ends them on the
+cells. 1b reads geometry only -- no marker of any cell.
+
 | File | Role |
 |---|---|
-| `islet_classifier_fit.py` | writes `classifiers/pixel_classifiers/Islets_<tag>.json` for one image: CD99, INS, GCG, SST each against its own threshold for that image, fitted on the image's own cells; CD99 counts only within 6 um of a hormone pixel; closing, opening, 1 um margin. Its docstring is the method. (tests: `tests/test_islet_classifier_fit.py`) |
+| `islet_classifier_fit.py` | writes `classifiers/pixel_classifiers/Islets_<tag>.json` for one image: CD99, INS, GCG, SST each against its own threshold for that image, fitted on the image's own cells; CD99 counts only within 6 um of a hormone pixel; closing, opening, 1 um margin. Its docstring is the method. Also writes `IsletHormone_<tag>.json`: a hormone above its threshold and nothing else -- the outline a Hormone Fragment takes. (tests: `tests/test_islet_classifier_fit.py`, `tests/test_islet_outlines_to_cells.py`) |
 | `qupath/1_panc_objects_perimage.groovy` | `scripts/1_panc_objects.groovy` with ONE line changed: it loads `Islets_<tag>` instead of `Islets2`. A test fails if anything else differs. |
-| `islet_classifiers.sh` | `fit` / `trial` (private copies; Islets2 first for comparison) / `check` / `montage` / `table` / `apply` (the master project, only after the maintainer has looked). `--nd` = the nine control donors the classifier is tested on. |
-| `islet_classifier_check.py`, `islet_classifier_montage.py` | QuPath's objects counted like the fit counts, beside Islets2's; pictures for looking without QuPath |
+| `qupath/1b_islet_outlines_to_cells.groovy` | step `1b`, after 1 and after the cells (0). Per outline: a detection FITS when it reaches no farther than one classifier pixel (1.0156 um) beyond the outline and most of it is inside; every other detection the outline touches is cut by it and taken out of it, so the edge runs along cell outlines; strips under 2.5 px between two cut cells are removed; the result is split into its connected pieces. A piece with two or more whole cells (a cell = a detection with a nucleus) is an `Islet` with that outline; with exactly one, an `Islet` whose outline IS that cell's; with none, dropped. An outline no whole cell fits in becomes class **`Hormone Fragment`** with the hormone's own outline (`IsletHormone_<tag>`). Every finished Islet carries `Whole cells`. |
+| `islet_outlines_to_cells.py` | the same rule in Python (shapely), so QuPath's result can be checked against an independent implementation |
+| `islet_classifiers.sh` | `fit` / `markers` / `trial` (private copies; Islets2 first for comparison; script 1's outlines kept before 1b) / `check` / `montage` / `table` / `apply` (the master project). `--nd` = the nine control donors the classifier is tested on. |
+| `islet_classifier_check.py`, `islet_classifier_montage.py` | QuPath's objects counted like the fit counts -- final Islets, script 1's outlines before 1b, Islets2 -- the Hormone Fragments, and 1b against the Python reference; pictures for looking without QuPath |
 | `islet_cell_test.py` | library only: the CD99 reference level and the highest-marker reader that the fit imports |
 
+A `Hormone Fragment` is never an islet: script 8 parents cells to `Islet` / `EndocrineCluster` / `EndocrineSingle` /
+`Artifact` / `pLN` / `Tissue` only, `islet_export_adapter.py` hands the typing lane those islet classes only, and the
+typing names a cell endocrine only inside an islet -- so the hormone in a fragment makes no cell endocrine. Script 3
+writes a signed-distance column for the class on every image.
+
 Never write QuPath's own closing / minimum / maximum filters into a classifier file: `ImageOps.Filters.MorphOp` shares
-one kernel between threads and frees it with the tile that created it (QuPath 0.7.0). The classifiers use
-`op.filters.sum` + a threshold instead. The maintainer's structure thresholders carry the fault.
+one kernel between threads and frees it with the tile that created it (QuPath 0.7.0; reported upstream as
+qupath/qupath#2202). The classifiers use `op.filters.sum` + a threshold instead. The maintainer's structure
+thresholders carry the fault. A second library fault found in 1b: JTS 1.20's negative buffer with **mitre** joins
+returns almost nothing for some multi-part outlines -- 1b shrinks with round joins and refuses an opening that takes
+the whole cells away.
 
 Steps 3, 4 and 8 below are unchanged; with script 1 they see the class `Islet` only (`EndocrineCluster` and
 `EndocrineSingle` stay empty).

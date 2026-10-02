@@ -56,6 +56,15 @@ def test_which_objects_count_is_the_ruling_not_a_default():
             a.main()
 
 
+def test_a_hormone_fragment_is_never_an_islet():
+    """Maintainer, 2026-10-02: a Hormone Fragment's "markers do not contribute to cell type". The typing lane reads
+    islets only, so the hand-off must never pass a fragment on as one -- under either reading of which objects count."""
+    feats = [_feature("Islet", "Islet_1", box(0, 0, 10, 10)), _feature("Hormone Fragment", None, box(30, 0, 33, 3))]
+    for rule in ("all", "islet"):
+        assert sorted(a.select_islets(feats, rule)) == [1]
+    assert "Hormone Fragment" not in {c for classes in a.ISLET_CLASSES.values() for c in classes}
+
+
 # ---------------------------------------------------------------- expansions
 
 def test_bands_exclude_every_islet_and_split_at_equal_distance():

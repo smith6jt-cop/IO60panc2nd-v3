@@ -7,22 +7,26 @@
 # qupath/1_panc_objects_perimage.groovy is scripts/1_panc_objects.groovy with that one line changed.
 #
 #   fit      islet_classifier_fit.py per image -> <project>/classifiers/pixel_classifiers/Islets_<tag>.json
-#            (a new file per image; none of the maintainer's classifiers is touched) and a report in
-#            $V3/islet_classifier/fit/<tag>.json. Needs the image's cells export, its structure objects and the
-#            source workflow's REDSEA partition for its donor.
+#            and IsletHormone_<tag>.json (the hormone's own outline, for Hormone Fragments) -- new files per image;
+#            none of the maintainer's classifiers is touched -- and a report in $V3/islet_classifier/fit/<tag>.json.
+#            Needs the image's cells export, its structure objects and the source workflow's REDSEA partition.
+#   markers  IsletHormone_<tag>.json again from the thresholds of an existing fit report (no fit, no image read)
 #   trial    on a PRIVATE copy of each image's data file (the master project is not written): first the maintainer's
 #            script 1 as it is (Islets2), exported to trial/out_islets2/reviewed_islets/ for comparison; then script 1
-#            with the image's own classifier, step 4 (names), exported to trial/out/reviewed_islets/. The copies end
+#            with the image's own classifier, step 1b (outlines erode to the cell outlines; Hormone Fragments --
+#            maintainer, 2026-10-02), step 4 (names), exported to trial/out/reviewed_islets/. The outlines as script 1
+#            left them are exported to trial/out/script1_outlines/ before 1b runs (step 1_outlines). The copies end
 #            holding the new islets, so trial/project.qpproj can be opened to look at them.
 #   check    QuPath's objects from the trial: the same cells as the fit expected? and the counts beside Islets2's
 #   montage  pictures of both sets of objects on the image, for looking without QuPath
 #   table    the checks (or, before a trial, the fit reports) of the given images as one table
-#   apply    script 1 with the image's own classifier on the master project. Only after the maintainer has looked.
+#   apply    script 1 with the image's own classifier, then 1b and 4, on the master project. Only after the maintainer
+#            has looked.
 #
 # The test set is every non-diabetic / control donor (maintainer, 2026-10-01: "use all non-diabetic/controls for
 # testing classifier since the endocrine differences with disease interfere"):  --ids "$ND_IDS"
 #
-# Usage: islet_classifiers.sh <fit|trial|check|montage|table|apply> --ids "<entry ids>" | --nd [--jobs N] [--lanes N]
+# Usage: islet_classifiers.sh <fit|markers|trial|check|montage|table|apply> --ids "<entry ids>" | --nd [--jobs N] [--lanes N]
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -90,6 +94,13 @@ fit)
         [[ -s $OUT/fit/$tag.json && -s $PROJ/classifiers/pixel_classifiers/Islets_$tag.json ]] && log "$tag: classifier written" \
             || log "$tag: NO classifier -- see $OUT/logs/fit_$tag.log: $(tail -n 1 "$OUT/logs/fit_$tag.log" 2> /dev/null)"
     done ;;
+markers)
+    for i in $IDS; do
+        IFS=$'\t' read -r tag _ _ < <(describe "$i")
+        [[ -s $OUT/fit/$tag.json ]] || die "$tag: no fit report -- run fit first"
+        "$PYS" "$HERE/islet_classifier_fit.py" --tag "$tag" --classifier "$PROJ/classifiers/pixel_classifiers/Islets_$tag.json" \
+            --report "$OUT/fit/$tag.json" --marker-only
+    done ;;
 trial)
     mkdir -p "$TRIAL/data"
     python3 - "$PROJ/project.qpproj" "$TRIAL/project.qpproj" $IDS <<'EOF'
@@ -105,6 +116,7 @@ EOF
     for i in $IDS; do
         IFS=$'\t' read -r tag _ _ < <(describe "$i")
         [[ -s $PROJ/classifiers/pixel_classifiers/Islets_$tag.json ]] || die "$tag: no classifier -- run fit first"
+        [[ -s $PROJ/classifiers/pixel_classifiers/IsletHormone_$tag.json ]] || die "$tag: no IsletHormone_ classifier -- run markers (or fit)"
         [[ -s $TRIAL/data/$i/data.qpdata ]] && { log "trial: data/$i already copied"; continue; }
         mkdir -p "$TRIAL/data/$i"
         cp -p "$PROJ/data/$i/data.qpdata" "$PROJ/data/$i/server.json" "$PROJ/data/$i/summary.json" "$TRIAL/data/$i/"
@@ -121,17 +133,21 @@ EOF
             --steps preflight,1,4,R_export --script "1=$PROJ/scripts/1_panc_objects.groovy" --force 1 --lanes-light "$LANES" --lanes-cpu 1 \
             --mem-budget 300 --heap preflight=24 --heap 4=32 --heap R_export=32
     fi
-    "$HERE/run_v3.sh" --project "$TRIAL/project.qpproj" --out "$TRIAL/out" --images "$ids_csv" --steps preflight,1,4,R_export \
-        --script "1=$STEP1" --force 1 --lanes-light "$LANES" --lanes-cpu 1 --mem-budget 300 \
-        --heap preflight=24 --heap 4=32 --heap R_export=32 ;;
+    # script 1; its outlines exported as it drew them (1_outlines); then they erode to the cells (1b); names (4); export
+    "$HERE/run_v3.sh" --project "$TRIAL/project.qpproj" --out "$TRIAL/out" --images "$ids_csv" \
+        --steps preflight,1,1_outlines,1b,4,R_export --script "1=$STEP1" --force 1 --lanes-light "$LANES" --lanes-cpu 1 \
+        --mem-budget 300 --heap preflight=24 --heap 1_outlines=32 --heap 4=32 --heap R_export=32 ;;
 check)
     running=0
     for i in $IDS; do
         IFS=$'\t' read -r tag _ donor < <(describe "$i")
         baseline=()
         [[ -s $TRIAL/out_islets2/reviewed_islets/$tag.geojson ]] && baseline=(--baseline "$TRIAL/out_islets2/reviewed_islets/$tag.geojson")
+        before=()
+        [[ -s $TRIAL/out/script1_outlines/$tag.geojson ]] && before=(--script1-objects "$TRIAL/out/script1_outlines/$tag.geojson" \
+            --cell-outlines "$EXPORT/cell_geojson/$tag.geojson")
         "$PYS" "$HERE/islet_classifier_check.py" --tag "$tag" --fit "$OUT/fit/$tag.json" --fit-objects "$OUT/fit/$tag.objects.npy" \
-            --qupath-objects "$TRIAL/out/reviewed_islets/$tag.geojson" "${baseline[@]}" --cells "$EXPORT/cells/$tag.parquet" \
+            --qupath-objects "$TRIAL/out/reviewed_islets/$tag.geojson" "${before[@]}" "${baseline[@]}" --cells "$EXPORT/cells/$tag.parquet" \
             --redsea "$SENIOR_DATA/redsea/donor_id=$donor/data_0.parquet" --structures "$EXPORT/structures" \
             --out "$OUT/fit/$tag.check.json" > "$OUT/logs/check_$tag.log" 2>&1 &
         ((++running % JOBS == 0)) && wait
@@ -148,7 +164,10 @@ montage)
         IFS=$'\t' read -r tag image donor < <(describe "$i")
         baseline=()
         [[ -s $TRIAL/out_islets2/reviewed_islets/$tag.geojson ]] && baseline=(--baseline "$TRIAL/out_islets2/reviewed_islets/$tag.geojson")
+        before=()
+        [[ -s $TRIAL/out/script1_outlines/$tag.geojson ]] && before=(--script1 "$TRIAL/out/script1_outlines/$tag.geojson")
         "$PYS" "$HERE/islet_classifier_montage.py" --tag "$tag" --image "$image" --objects "$TRIAL/out/reviewed_islets/$tag.geojson" \
+            "${before[@]}" --cell-outlines "$EXPORT/cell_geojson/$tag.geojson" \
             "${baseline[@]}" --cells "$EXPORT/cells/$tag.parquet" --redsea "$SENIOR_DATA/redsea/donor_id=$donor/data_0.parquet" \
             --structures "$EXPORT/structures" --anchors "$EXPORT/islet_anchors.csv" --label "$donor" \
             --out "$OUT/pictures/$donor.png" > "$OUT/logs/montage_$tag.log" 2>&1 &
@@ -161,15 +180,19 @@ apply)
         IFS=$'\t' read -r tag _ _ < <(describe "$i")
         [[ -s $PROJ/classifiers/pixel_classifiers/Islets_$tag.json ]] || die "$tag: no classifier -- run fit first"
     done
-    "$HERE/run_v3.sh" --images "$ids_csv" --steps preflight,1,4,R_export --script "1=$STEP1" --lanes-light "$LANES" --lanes-cpu 1 \
-        --mem-budget 300 --heap preflight=24 --heap 4=32 --heap R_export=32 ;;
+    for i in $IDS; do
+        IFS=$'\t' read -r tag _ _ < <(describe "$i")
+        [[ -s $PROJ/classifiers/pixel_classifiers/IsletHormone_$tag.json ]] || die "$tag: no IsletHormone_ classifier -- run markers (or fit)"
+    done
+    "$HERE/run_v3.sh" --images "$ids_csv" --steps preflight,1,1_outlines,1b,4,R_export --script "1=$STEP1" --lanes-light "$LANES" --lanes-cpu 1 \
+        --mem-budget 300 --heap preflight=24 --heap 1_outlines=32 --heap 4=32 --heap R_export=32 ;;
 table)
     "$PYS" - "$OUT/fit" $(for i in $IDS; do describe "$i" | cut -f1,3 | tr '\t' '='; done) <<'EOF'
 import json, sys
 from pathlib import Path
 fit = Path(sys.argv[1])
-cols = ["donor", "classifier", "CD99", "INS", "GCG", "SST", "objects with cells", "cells inside", "neighbours inside", "%", "enclosed non-endocrine inside",
-        "endocrine outside", "%", "confirmed endocrine outside", "%", "of confirmed"]
+cols = ["donor", "objects", "CD99", "INS", "GCG", "SST", "islets", "1 cell", "2-3", "4-10", ">10", "hormone fragments", "cells inside", "neighbours inside", "%",
+        "enclosed non-endocrine inside", "endocrine outside", "%", "confirmed endocrine outside", "%", "of confirmed"]
 print(*cols, sep="\t")
 num = lambda v: "not used" if v is None else f"{v:.0f}"
 for item in sys.argv[2:]:
@@ -178,16 +201,23 @@ for item in sys.argv[2:]:
     if not report.exists():
         print(donor, "no classifier", sep="\t"); continue
     r = json.loads(report.read_text()); t = r["thresholds"]
+    thr = [num(t[k]) for k in ("CD99", "INS", "GCG", "SST")]
     rows = []
     if check.exists():
         c = json.loads(check.read_text())
         if "islets2" in c:
-            rows.append(("Islets2", ["", "", "", ""], c["islets2"]))
-        rows.append(("this image's own", [num(t[k]) for k in ("CD99", "INS", "GCG", "SST")], c["qupath"]))
+            rows.append(("Islets2 (script 1 as it was)", [""] * 4, c["islets2"], ""))
+        if "script_1" in c:
+            rows.append(("this image's own classifier, script 1", thr, c["script_1"], ""))
+            rows.append(("... then eroded to the cell outlines (1b)", thr, c["qupath"], c["fragments"]["hormone_fragments"]))
+        else:
+            rows.append(("this image's own classifier", thr, c["qupath"], ""))
     else:
-        rows.append(("this image's own (expected)", [num(t[k]) for k in ("CD99", "INS", "GCG", "SST")], r["after_script_1"]))
-    for name, thr, s in rows:
-        print(donor, name, *thr, s["objects_with_cells"], s["cells_inside"], s["inside_other_at_the_edge"], s["inside_other_at_the_edge_percent"],
+        rows.append(("this image's own classifier (expected)", thr, r["after_script_1"], ""))
+    for name, th, s, frag in rows:
+        by = s.get("objects_by_cells", {})
+        print(donor, name, *th, s["objects_with_cells"], by.get("1", ""), by.get("2-3", ""), by.get("4-10", ""), by.get(">10", ""), frag,
+              s["cells_inside"], s["inside_other_at_the_edge"], s["inside_other_at_the_edge_percent"],
               s["inside_other_enclosed"], s["endocrine_outside"], s["endocrine_outside_percent"], s["confirmed_outside"], s["confirmed_outside_percent"],
               r["cells"]["confirmed"], sep="\t")
 EOF
