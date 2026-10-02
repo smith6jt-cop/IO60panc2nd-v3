@@ -162,8 +162,11 @@ def senior_typing():
 def test_the_lanes_own_readers_take_the_islet_file(tmp_path, monkeypatch, senior_typing):
     import build_islet_geometry as geometry
     import islet_membership as membership
-    chosen = a.select_islets([_feature("Islet", "Islet_4", box(0, 0, 100, 100), n_cells=30),
-                              _feature("EndocrineSingle", "Single_9", box(130, 0, 140, 10), n_cells=1)], "all")
+    chosen = a.select_islets([_feature("Islet", "Islet_4", box(0, 0, 100, 100), **{"Whole cells": 30.0, "Mean caliper diameter µm": 60.5}),
+                              _feature("EndocrineSingle", "Single_9", box(130, 0, 140, 10), **{"Whole cells": 1.0, "Mean caliper diameter µm": 9.5})], "all")
+    props = {f["properties"]["name"]: f["properties"] for f in a.islet_features(chosen, None)}
+    assert props["Islet_4"]["n_cells"] == 30.0 and props["Islet_4"]["mean_diameter_um"] == 60.5 and props["Islet_4"]["size_class"] == "Islet"
+    assert props["Islet_200009"]["n_cells"] == 1.0 and props["Islet_200009"]["size_class"] == "EndocrineSingle"
     bands = a.nearest_islet_bands({n: o["geom"] for n, o in chosen.items()}, 40.0)
     folder = tmp_path / "typing_islets"
     folder.mkdir()

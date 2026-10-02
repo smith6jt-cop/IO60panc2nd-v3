@@ -13,7 +13,8 @@ decides nothing about cells and changes nothing in QuPath.
          all     every endocrine object, numbered  Islet_N -> N, Cluster_N -> 100000 + N,
                  Single_N -> 200000 + N  (so a number still says which QuPath object it is)
          islet   only the >= 35 um Islet objects, numbered N
-     The size class, the QuPath name and id, and the cell count travel as properties.
+     The size class (step 1b's designation: Islet / EndocrineCluster / EndocrineSingle), the QuPath name and id,
+     the count of whole cells and the diameter travel as properties.
      With --expansion outlines each islet also gets `Islet_<N>_exp20um` (classification IsletExpanded):
      the 20 um zone outside it, minus every islet, cut where another islet is nearer -- the nearest-
      islet split the maintainer's 4_islet_expander.groovy made, computed here because no band is
@@ -152,7 +153,9 @@ def islet_features(chosen: dict[int, dict], bands: dict[int, object] | None) -> 
                     "properties": {"objectType": "annotation", "name": f"Islet_{number}",
                                    "classification": {"name": "Islet"},
                                    "qupath_name": o["qupath_name"], "size_class": o["qupath_class"],
-                                   "n_cells": m.get("n_cells"), "mean_diameter_um": m.get("Mean diameter um")}})
+                                   # step 1b's own measurements (2026-10-02): the whole cells in the object and
+                                   # how far across it is; the retired detector's keys are no longer written
+                                   "n_cells": m.get("Whole cells"), "mean_diameter_um": m.get("Mean caliper diameter µm")}})
         band = (bands or {}).get(number)
         if band is not None and not band.is_empty:
             out.append({"type": "Feature", "geometry": mapping(band),
