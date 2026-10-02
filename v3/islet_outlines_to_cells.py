@@ -43,6 +43,39 @@ FIT_TOLERANCE_UM = 1.0156        # one pixel of the islet classifier
 # on HDL115 were split by one and not the other.)
 WHISKER_UM = 0.63475             # 1.25 full-resolution pixels
 CLASS_ISLET, CLASS_FRAGMENT = "Islet", "Hormone Fragment"
+# The designation of what step 1b leaves (maintainer, 2026-10-02: "why are there no designations of EndocrineCluster or
+# EndocrineSingle?"). One whole cell: EndocrineSingle (their "hormone single-cell") -- decided by the cell, not by
+# size: a third of the one-cell objects are over 10 um across. Two or more: EndocrineCluster, or Islet from 35 um
+# across (Drotar 2025: the mean of the largest and the smallest diameter).
+CLASS_CLUSTER, CLASS_SINGLE = "EndocrineCluster", "EndocrineSingle"
+ENDOCRINE_CLASSES = (CLASS_ISLET, CLASS_CLUSTER, CLASS_SINGLE)
+ISLET_MIN_DIAMETER_UM = 35.0
+KEY_CELLS, KEY_DIAMETER = "Whole cells", "Mean caliper diameter µm"
+
+
+def min_caliper(geom) -> float:
+    """The smallest caliper width of a geometry (JTS MinimumDiameter): over the edges of its convex hull, the least
+    of the greatest distances of the hull's points from that edge. In the geometry's own units."""
+    hull = geom.convex_hull
+    if hull.geom_type != "Polygon":
+        return 0.0
+    c = np.asarray(hull.exterior.coords)[:-1]
+    edge = np.roll(c, -1, axis=0) - c
+    normal = np.column_stack([-edge[:, 1], edge[:, 0]])
+    normal /= np.linalg.norm(normal, axis=1, keepdims=True)
+    return float(np.min(np.max(np.abs(np.einsum("ijk,ik->ij", c[None, :, :] - c[:, None, :], normal)), axis=1)))
+
+
+def mean_caliper(geom) -> float:
+    """QuPath's Max diameter (the minimum bounding circle's) and Min diameter (the smallest caliper width), averaged."""
+    return (2.0 * float(shapely.minimum_bounding_radius(geom)) + min_caliper(geom)) / 2.0
+
+
+def designation(n_cells: float, across_um: float, islet_min_um: float = ISLET_MIN_DIAMETER_UM) -> str:
+    """EndocrineSingle for one whole cell; otherwise Islet from `islet_min_um` across, EndocrineCluster under it."""
+    if n_cells < 2:
+        return CLASS_SINGLE
+    return CLASS_ISLET if across_um >= islet_min_um else CLASS_CLUSTER
 
 
 def polygons_of(geom) -> list:

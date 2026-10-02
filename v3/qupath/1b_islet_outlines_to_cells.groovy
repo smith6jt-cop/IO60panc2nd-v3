@@ -26,13 +26,29 @@
  *      Fragment is never an islet: script 8 does not parent cells to it, and the typing reads islets only, so the
  *      hormone in it makes no cell endocrine.
  *
- * Every Islet this step has finished carries the measurement 'Whole cells' (how many cells lie whole in it). That is
- * also how a re-run recognises its own output: it works only on Islets without it. Hormone Fragments left from an
- * earlier run are removed when script 1 has re-made every Islet since (none carries 'Whole cells').
+ *   5. Every object left is then DESIGNATED (the maintainer, 2026-10-02: "why are there no designations of
+ *      EndocrineCluster or EndocrineSingle?" -- script 1 knows the one class Islet, and the sizes went with the
+ *      detector that was retired on 10-01):
+ *        EndocrineSingle    exactly one whole cell (their "hormone single-cell"; its outline is that cell's outline)
+ *        EndocrineCluster   two or more whole cells, under ISLET_MIN_DIAMETER_UM across
+ *        Islet              two or more whole cells, ISLET_MIN_DIAMETER_UM across or more (Drotar 2025: 35 um)
+ *      "Across" is the mean of QuPath's own Max diameter and Min diameter of the outline (minimum bounding circle,
+ *      minimum caliper width) -- Drotar's mean of the largest and smallest diameter; it is written on the object as
+ *      'Mean caliper diameter um'. A single is decided by the cell, not by size: a third of the one-cell objects
+ *      are over 10 um across, and a size rule called such a cell a cluster. Labels only: no outline changes.
+ *
+ * Every object this step has finished carries the measurement 'Whole cells' (how many cells lie whole in it). That is
+ * also how a re-run recognises its own output: it erodes only Islets without it, and designates the rest again (so a
+ * re-run after ISLET_MIN_DIAMETER_UM changed re-labels without touching an outline). What an earlier run made from
+ * outlines script 1 has since drawn again -- EndocrineCluster, EndocrineSingle and Hormone Fragment objects; script 1
+ * removes its own class Islet only -- is removed first: that is the case when no finished Islet is left and most of
+ * those objects lie under a new outline.
  *
  * islet_outlines_to_cells.py is the same rule in Python; islet_classifier_check.py compares the two.
  */
 
+import org.locationtech.jts.algorithm.MinimumBoundingCircle
+import org.locationtech.jts.algorithm.MinimumDiameter
 import org.locationtech.jts.geom.Envelope
 import org.locationtech.jts.geom.Geometry
 import org.locationtech.jts.geom.PrecisionModel
@@ -58,6 +74,9 @@ evaluate(new File(buildFilePath(PROJECT_BASE_DIR, 'scripts', 'lib', 'common.groo
 double FIT_TOLERANCE_UM = 1.0156      // a detection fits when it reaches no farther than this beyond the outline
 double WHISKER_UM = 0.63475           // strips of an eroded outline narrower than twice this (2.5 px) are removed
 String CLASS_FRAGMENT = 'Hormone Fragment'
+String CLASS_CLUSTER = 'EndocrineCluster'
+String CLASS_SINGLE = 'EndocrineSingle'
+double ISLET_MIN_DIAMETER_UM = 35.0   // two or more whole cells and this far across or more: an Islet (Drotar 2025)
 String KEY_CELLS = 'Whole cells'
 String MARKER_CLASSIFIER_PREFIX = 'IsletHormone_'
 // ====================================================
@@ -76,30 +95,76 @@ long t0 = System.currentTimeMillis()
 def detections = new ArrayList(getDetectionObjects())
 if (detections.isEmpty()) throw new IllegalStateException('[01b] No detections: the cells (script 0) must exist before islet outlines can end on them.')
 def clsOf = { o -> o.getPathClass()?.toString() }
-def allIslets = getAnnotationObjects().findAll { clsOf(it) == CLASS_ISLET && it.getROI() != null && it.getROI().isArea() }
-def fresh = allIslets.findAll { Double.isNaN(getMeas(it, KEY_CELLS)) }
-def finished = allIslets.findAll { !Double.isNaN(getMeas(it, KEY_CELLS)) }
+def ENDOCRINE = [CLASS_ISLET, CLASS_CLUSTER, CLASS_SINGLE]
+String KEY_DIAMETER = "Mean caliper diameter ${cal.getPixelWidthUnit()}".toString()
+def isDone = { o -> clsOf(o) in ENDOCRINE && o.getROI() != null && o.getROI().isArea() && !Double.isNaN(getMeas(o, KEY_CELLS)) }
+def fresh = getAnnotationObjects().findAll { clsOf(it) == CLASS_ISLET && it.getROI() != null && it.getROI().isArea() && Double.isNaN(getMeas(it, KEY_CELLS)) }
+def finished = getAnnotationObjects().findAll { isDone(it) }
 def oldFragments = getAnnotationObjects().findAll { clsOf(it) == CLASS_FRAGMENT }
-println "[01b] ${detections.size()} detections; Islet annotations: ${fresh.size()} from script 1, ${finished.size()} already on cell outlines; " +
-        "${oldFragments.size()} ${CLASS_FRAGMENT} annotations"
+println "[01b] ${detections.size()} detections; ${fresh.size()} Islet annotations from script 1; ${finished.size()} objects already on cell outlines " +
+        "${new TreeMap(finished.countBy { clsOf(it) })}; ${oldFragments.size()} ${CLASS_FRAGMENT} annotations"
 
-def details = [tag: tag, fit_tolerance_um: FIT_TOLERANCE_UM, whisker_um: WHISKER_UM, detections: detections.size(),
-               islets_from_script_1: fresh.size(), islets_already_done: finished.size()]
+def details = [tag: tag, fit_tolerance_um: FIT_TOLERANCE_UM, whisker_um: WHISKER_UM, islet_min_diameter_um: ISLET_MIN_DIAMETER_UM,
+               detections: detections.size(), islets_from_script_1: fresh.size(), islets_already_done: finished.size()]
+
+// ---- 5. designation: one whole cell = EndocrineSingle; more = EndocrineCluster, or Islet from ISLET_MIN_DIAMETER_UM across ----
+def designate = {
+    def counts = new TreeMap([(CLASS_ISLET): 0, (CLASS_CLUSTER): 0, (CLASS_SINGLE): 0])
+    int relabelled = 0, measured = 0
+    getAnnotationObjects().findAll { isDone(it) }.each { o ->
+        def g = o.getROI().getGeometry()
+        double across = (2.0d * new MinimumBoundingCircle(g).getRadius() + new MinimumDiameter(g).getLength()) / 2.0d * pxUm
+        String want = getMeas(o, KEY_CELLS) < 2 ? CLASS_SINGLE : (across >= ISLET_MIN_DIAMETER_UM ? CLASS_ISLET : CLASS_CLUSTER)
+        if (clsOf(o) != want) { o.setPathClass(getPathClass(want)); relabelled++ }
+        double had = getMeas(o, KEY_DIAMETER)
+        if (Double.isNaN(had) || Math.abs(had - across) > 1e-9) { putMeas(o, KEY_DIAMETER, across); measured++ }
+        counts[want] = counts[want] + 1
+    }
+    return [counts: counts, relabelled: relabelled, measured: measured]
+}
 
 if (fresh.isEmpty()) {
-    // nothing script 1 has made since the last run of this step: leave the image exactly as it is
-    V3_RESULT = [ok: !finished.isEmpty() || !oldFragments.isEmpty(), changed: false,
+    // nothing script 1 has made since the last run of this step: no outline is touched; the designation is made again
+    def des = designate()
+    if (des.relabelled > 0) fireHierarchyUpdate()
+    details += [designation: des.counts, relabelled: des.relabelled]
+    V3_RESULT = [ok: !finished.isEmpty() || !oldFragments.isEmpty(), changed: des.relabelled > 0 || des.measured > 0,
                  message: (finished.isEmpty() && oldFragments.isEmpty()) ? 'no Islet annotation on this image (run script 1 first)'
-                         : "nothing to do: all ${finished.size()} Islets already end on cell outlines".toString(),
+                         : ("no new outline from script 1: all ${finished.size()} objects already end on cell outlines; designation ${des.counts} " +
+                            "(${des.relabelled} re-labelled)").toString(),
                  details: details]
     println "[01b] ${V3_RESULT.message}"
 } else {
-    // Hormone Fragments from an earlier run belong to islets script 1 has since re-made (it removes Islets only)
-    int staleFragments = 0
-    if (finished.isEmpty() && !oldFragments.isEmpty()) {
-        staleFragments = oldFragments.size()
-        removeObjects(oldFragments, true)
-        println "[01b] Removed ${staleFragments} ${CLASS_FRAGMENT} annotations left from an earlier run (script 1 has re-made every Islet since)"
+    // What an earlier run made from outlines that script 1 has since drawn again: script 1 removes its own class
+    // (Islet) only, so the EndocrineCluster / EndocrineSingle / Hormone Fragment objects of that run are still here.
+    // That is the case when no finished Islet is left AND most of those objects lie under a new outline. (An image
+    // that never had an Islet-sized object and gets one hand-drawn outline keeps what it has: nothing lies under it.)
+    int staleFragments = 0, staleDesignated = 0
+    def derived = finished.findAll { clsOf(it) != CLASS_ISLET } + oldFragments
+    if (!finished.any { clsOf(it) == CLASS_ISLET } && !derived.isEmpty()) {
+        def freshTree = new STRtree()
+        def freshPrep = new IdentityHashMap()
+        fresh.each { f -> freshTree.insert(f.getROI().getGeometry().getEnvelopeInternal(), f) }
+        freshTree.build()
+        int under = derived.count { d ->
+            def pt = d.getROI().getGeometry().getInteriorPoint()
+            freshTree.query(pt.getEnvelopeInternal()).any { f ->
+                def pg = freshPrep.get(f)
+                if (pg == null) { pg = PreparedGeometryFactory.prepare(f.getROI().getGeometry()); freshPrep.put(f, pg) }
+                pg.contains(pt)
+            }
+        }
+        if (2 * under >= derived.size()) {
+            staleFragments = oldFragments.size()
+            staleDesignated = derived.size() - staleFragments
+            removeObjects(derived, true)
+            finished = finished.findAll { clsOf(it) == CLASS_ISLET }
+            println "[01b] Removed ${staleDesignated} ${CLASS_CLUSTER} / ${CLASS_SINGLE} and ${staleFragments} ${CLASS_FRAGMENT} annotations left from an " +
+                    "earlier run (${under} of ${derived.size()} lie under an outline script 1 has drawn since)"
+        } else {
+            println "[01b] Kept ${derived.size()} ${CLASS_CLUSTER} / ${CLASS_SINGLE} / ${CLASS_FRAGMENT} annotations of an earlier run: only ${under} lie under " +
+                    "one of the ${fresh.size()} new outlines, so script 1 has not drawn their outlines again"
+        }
     }
 
     // Overlays of pixel-staircase outlines now and then meet a geometry that is not valid (a ring touching itself);
@@ -297,6 +362,7 @@ if (fresh.isEmpty()) {
         f.getMeasurementList().clear()
     }
     if (!emptyFragments.isEmpty()) removeObjects(emptyFragments, true)
+    def des = designate()
     fireHierarchyUpdate()
 
     int nFragments = fragments.size() - emptyFragments.size()
@@ -304,13 +370,15 @@ if (fresh.isEmpty()) {
     details += [islets: nIsletsOut, islets_one_whole_cell: nSingle, islets_two_or_more: nMulti, outlines_split: nSplit,
                 pieces_without_a_whole_cell_dropped: nPiecesDropped, whole_cells: wholeCells, whole_detections: wholeDetections,
                 hormone_fragments: nFragments, outlines_without_cell_or_hormone_removed: emptyFragments.size(),
-                stale_fragments_removed: staleFragments, overlays_repaired: nRepaired,
+                stale_fragments_removed: staleFragments, stale_designated_removed: staleDesignated,
+                designation: des.counts, relabelled: des.relabelled, overlays_repaired: nRepaired,
                 openings_done_part_by_part: nOpenedByPart, openings_skipped: nOpeningSkipped,
                 seconds: (System.currentTimeMillis() - t0) / 1000.0]
     boolean ok = nIsletsOut > 0
     V3_RESULT = [ok: ok, changed: true,
-                 message: ("${fresh.size()} outlines from script 1 -> ${nIsletsOut} Islets on cell outlines (${nSingle} one cell, ${nMulti} more; " +
-                         "${nSplit} outlines split) + ${nFragments} ${CLASS_FRAGMENT}; ${emptyFragments.size()} without cell or hormone removed").toString(),
+                 message: ("${fresh.size()} outlines from script 1 -> ${nIsletsOut} objects on cell outlines (${nSingle} one cell, ${nMulti} more; " +
+                         "${nSplit} outlines split) + ${nFragments} ${CLASS_FRAGMENT}; ${emptyFragments.size()} without cell or hormone removed; " +
+                         "designation ${des.counts}").toString(),
                  details: details]
     println "[01b] ${V3_RESULT.message} (${details.seconds} s)"
 }

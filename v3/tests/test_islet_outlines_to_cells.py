@@ -228,3 +228,39 @@ def test_the_export_is_read_by_class_and_only_islets_count_as_islets(tmp_path):
     f.write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
     got = chk.read_by_class(f)
     assert sorted(got["by_class"]) == [oc.CLASS_FRAGMENT, "Islet"] and got["whole_cells"] == [3.0]
+
+
+# ---- the designation (maintainer, 2026-10-02: "why are there no designations of EndocrineCluster or EndocrineSingle?") ----
+
+def test_the_smallest_caliper_width_does_not_depend_on_how_the_outline_lies():
+    from shapely import affinity
+    from shapely.geometry import box
+    r = box(0, 0, 10, 4)
+    assert abs(oc.min_caliper(r) - 4.0) < 1e-9
+    for angle in (17, 45, 90, 133):
+        assert abs(oc.min_caliper(affinity.rotate(r, angle)) - 4.0) < 1e-9
+    assert oc.min_caliper(box(0, 0, 10, 4).exterior) > 0          # a ring has a hull too
+    assert oc.min_caliper(shapely.Point(1, 1)) == 0.0
+
+
+def test_across_is_the_mean_of_the_bounding_circle_and_the_smallest_width():
+    from shapely.geometry import Point, box
+    # 10 x 4: the bounding circle's diameter is the diagonal, the smallest width is 4
+    assert abs(oc.mean_caliper(box(0, 0, 10, 4)) - (np.hypot(10, 4) + 4.0) / 2.0) < 1e-6
+    disc = Point(0, 0).buffer(20.0, quad_segs=64)                  # a disc 40 across
+    assert abs(oc.mean_caliper(disc) - 40.0) < 0.05
+
+
+def test_one_whole_cell_is_a_single_whatever_its_size():
+    assert oc.designation(1, 6.0) == oc.CLASS_SINGLE
+    assert oc.designation(1, 22.6) == oc.CLASS_SINGLE              # the largest one-cell object of the cohort
+    assert oc.designation(1, 40.0) == oc.CLASS_SINGLE
+
+
+def test_two_or_more_cells_are_a_cluster_under_35_um_and_an_islet_from_35():
+    assert oc.designation(2, 9.0) == oc.CLASS_CLUSTER              # two small cells: a cluster, never a single
+    assert oc.designation(8, 34.99) == oc.CLASS_CLUSTER
+    assert oc.designation(8, 35.0) == oc.CLASS_ISLET
+    assert oc.designation(2, 36.0) == oc.CLASS_ISLET
+    assert oc.designation(8, 30.0, islet_min_um=30.0) == oc.CLASS_ISLET
+    assert set(oc.ENDOCRINE_CLASSES) == {"Islet", "EndocrineCluster", "EndocrineSingle"} and oc.CLASS_FRAGMENT not in oc.ENDOCRINE_CLASSES

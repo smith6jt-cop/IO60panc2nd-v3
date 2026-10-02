@@ -5,14 +5,18 @@ Each window is shown twice: the three hormones (INS red, GCG green, SST blue) an
 image's own levels (black = the image's background anchor, white = 1.5 x the median of its confirmed endocrine
 cells), so a dim image is not made to look bright.
 
-  red line       the Islets as they end: on cell segmentation outlines (step 1b; maintainer, 2026-10-02)
-  orange line    Hormone Fragments: no whole cell fits; the outline is the hormone's own
-  yellow dashes  the outline script 1 drew with the image's own classifier, before 1b (--script1), or else the
+  the objects as they end, on cell segmentation outlines (step 1b; maintainer, 2026-10-02), in the project's own
+  class colours:
+  red line       Islet: two or more whole cells, 35 um across or more
+  orange line    EndocrineCluster: two or more whole cells, under 35 um across
+  cyan line      EndocrineSingle: one whole cell; the outline is that cell's own
+  yellow line    Hormone Fragment: no whole cell fits; the outline is the hormone's own
+  white dashes   the outline script 1 drew with the image's own classifier, before 1b (--script1), or else the
                  objects script 1 makes with Islets2 (--baseline)
   thin grey      cell segmentation outlines (--cell-outlines; dotted = a detection without a nucleus)
-  white dot      a cell inside an Islet
-  cyan +         a confirmed endocrine cell (a hormone is its highest marker AND its CD99 is at the image's
-                 reference level or above) that the Islets leave outside
+  white dot      a cell inside an Islet, EndocrineCluster or EndocrineSingle
+  magenta +      a confirmed endocrine cell (a hormone is its highest marker AND its CD99 is at the image's
+                 reference level or above) that those objects leave outside
 
 Windows: --per-stratum Islets for each size (1 / 2-3 / 4-10 / >10 cells), chosen at random with a fixed seed, then
 --fragments Hormone Fragments, then --misses windows on confirmed cells left outside -- the failures are shown, not
@@ -88,8 +92,11 @@ def main() -> int:
         args.cells, args.redsea, args.structures, args.tag, ict.SENIOR_TYPING)
     lab = fit.label_cells(values, x_um, y_um, eligible, in_structure, other_markers, quantile)
     x0c, y0c = x_um / PX0, y_um / PX0
-    final = check.read_by_class(args.objects)["by_class"]
-    new = final.get(oc.CLASS_ISLET, [])
+    read = check.read_by_class(args.objects)
+    final = read["by_class"]
+    new = [e["geometry"] for e in read["endocrine"]]
+    new_class = np.array([e["class"] for e in read["endocrine"]], dtype=object)
+    new_across = np.array([oc.mean_caliper(e["geometry"]) * PX0 for e in read["endocrine"]])
     fragments = final.get(oc.CLASS_FRAGMENT, [])
     old = (check.read_by_class(args.script1)["by_class"].get(oc.CLASS_ISLET, []) if args.script1
            else (ict.read_objects(args.baseline) if args.baseline else []))
@@ -119,7 +126,7 @@ def main() -> int:
     for name, lo, hi in (("1 cell", 1, 1), ("2-3 cells", 2, 3), ("4-10 cells", 4, 10), ("more than 10 cells", 11, 10 ** 9)):
         pool = np.flatnonzero((per >= lo) & (per <= hi))
         for i in sorted(rng.choice(pool, size=min(args.per_stratum, len(pool)), replace=False)):
-            wins.append((f"{name} ({per[i]})", new[i].bounds))
+            wins.append((f"{name} ({per[i]}): {new_class[i]}, {new_across[i]:.0f} um", new[i].bounds))
     for i in sorted(rng.choice(len(fragments), size=min(args.fragments, len(fragments)), replace=False)):
         wins.append(("Hormone Fragment", fragments[i].bounds))
     missed = np.flatnonzero(lab["confirmed"] & ~inside)
@@ -148,20 +155,21 @@ def main() -> int:
             if len(cell_polys):
                 outline(ax, cell_polys[cell_nucleus], (x0, y0, x1, y1), color="#b0b0b0", lw=0.4)
                 outline(ax, cell_polys[~cell_nucleus], (x0, y0, x1, y1), color="#b0b0b0", lw=0.4, ls=":")
-            outline(ax, old, (x0, y0, x1, y1), color="yellow", lw=1.0, ls="--")
-            outline(ax, fragments, (x0, y0, x1, y1), color="orange", lw=1.5)
-            outline(ax, new, (x0, y0, x1, y1), color="red", lw=1.5)
+            outline(ax, old, (x0, y0, x1, y1), color="white", lw=0.9, ls="--")
+            outline(ax, fragments, (x0, y0, x1, y1), color="yellow", lw=1.5)
+            for cls, colour in ((oc.CLASS_SINGLE, "cyan"), (oc.CLASS_CLUSTER, "orange"), (oc.CLASS_ISLET, "red")):
+                outline(ax, [g for g, c in zip(new, new_class) if c == cls], (x0, y0, x1, y1), color=colour, lw=1.5)
             here = (x0c >= x0) & (x0c < x1) & (y0c >= y0) & (y0c < y1) & eligible
             ax.scatter(x0c[here & ~inside], y0c[here & ~inside], s=4, c="grey", marker=".")
             ax.scatter(x0c[here & inside], y0c[here & inside], s=14, c="white", marker=".")
             out_conf = here & ~inside & lab["confirmed"]
-            ax.scatter(x0c[out_conf], y0c[out_conf], s=60, c="cyan", marker="+")
+            ax.scatter(x0c[out_conf], y0c[out_conf], s=60, c="magenta", marker="+")
             ax.set_xlim(x0, x1); ax.set_ylim(y1, y0)
             ax.set_title(f"{k + 1}. {title} -- {(x1 - x0) * PX0:.0f} um across" if j == 0 else "CD99", fontsize=10)
     before = "the outline script 1 drew" if args.script1 else "Islets2"
-    fig.suptitle(f"{args.label or args.tag}: red = Islets on cell outlines; orange = Hormone Fragments; yellow dashes = {before}; grey = cell outlines. "
-                 "Left INS red / GCG green / SST blue, right CD99. White dot = cell inside an Islet; cyan + = confirmed endocrine cell left outside.",
-                 fontsize=12)
+    fig.suptitle(f"{args.label or args.tag}: red = Islet (35 um or more), orange = EndocrineCluster, cyan = EndocrineSingle (one cell), yellow = Hormone Fragment; "
+                 f"white dashes = {before}; grey = cell outlines. Left INS red / GCG green / SST blue, right CD99. "
+                 "White dot = cell inside one of them; magenta + = confirmed endocrine cell left outside.", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.975))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, dpi=70)

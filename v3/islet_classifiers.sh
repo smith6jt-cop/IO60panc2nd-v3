@@ -26,8 +26,9 @@
 #   apply    script 1 with the image's own classifier, then 1b and 4, on the master project. Only after the maintainer
 #            has looked.
 #   applied  what `apply` left on the master project, per image, read from the driver's own records
-#            ($V3/export/provenance): script 1's outlines, the Islets and Hormone Fragments 1b made of them, what it
-#            had to repair or skip, and the classes the export then found. Reads only.
+#            ($V3/export/provenance): script 1's outlines, the objects and Hormone Fragments 1b made of them, how it
+#            designated them (Islet / EndocrineCluster / EndocrineSingle), what it had to repair or skip, and the
+#            classes the export then found. Reads only.
 #
 # The test set is every non-diabetic / control donor (maintainer, 2026-10-01: "use all non-diabetic/controls for
 # testing classifier since the endocrine differences with disease interfere"):  --ids "$ND_IDS"
@@ -204,24 +205,31 @@ applied)
 import json, sys
 from pathlib import Path
 prov = Path(sys.argv[1])
-cols = ["donor", "script 1 outlines", "Islets", "one whole cell", "two or more", "outlines split", "pieces without a whole cell dropped",
+cols = ["donor", "script 1 outlines", "objects on cell outlines", "one whole cell", "two or more", "outlines split", "pieces without a whole cell dropped",
         "whole cells", "Hormone Fragments", "no cell and no hormone (removed)", "overlays repaired", "openings part by part", "openings skipped",
-        "exported classes", "1b status", "export status"]
+        "Islet", "EndocrineCluster", "EndocrineSingle", "exported classes", "1b status", "export status"]
 print(*cols, sep="\t")
-def latest(tag, step):          # the newest record of a step on this image, whichever site wrote it
-    found = sorted(prov.glob(f"{tag}/*/{step}.json"), key=lambda f: f.stat().st_mtime)
-    return json.loads(found[-1].read_text()) if found else None
+def records(tag, step):         # every record of a step on this image, oldest first: the current one and the superseded ones
+    found = list(prov.glob(f"{tag}/*/{step}.json")) + list(prov.glob(f"{tag}/*/history/{step}.seq*.json"))
+    found = [f for f in found if not f.name.endswith(".finish.json")]
+    return [json.loads(f.read_text()) for f in sorted(found, key=lambda f: f.stat().st_mtime)]
+def details(rec):
+    return (rec.get("step_result") or {}).get("details") or {}
 for item in sys.argv[2:]:
     tag, donor = item.rsplit("=", 1)
-    b, e = latest(tag, "1b"), latest(tag, "R_export")
-    if b is None:
+    runs, exports = [r for r in records(tag, "1b") if r.get("status") == "pass"], records(tag, "R_export")
+    if not runs:
         print(donor, "1b has not run", sep="\t"); continue
-    d = (b.get("step_result") or {}).get("details") or {}
-    by = ((e or {}).get("step_result") or {}).get("details", {}).get("by_class", {})
+    # the run that ended the outlines on the cells, and the latest designation (a later run may only have re-labelled)
+    d = next((details(r) for r in reversed(runs) if details(r).get("islets") is not None), {})
+    des = next((details(r).get("designation") for r in reversed(runs) if details(r).get("designation") is not None), {})
+    e = exports[-1] if exports else None
+    by = details(e).get("by_class", {}) if e else {}
     print(donor, d.get("islets_from_script_1"), d.get("islets"), d.get("islets_one_whole_cell"), d.get("islets_two_or_more"), d.get("outlines_split"),
           d.get("pieces_without_a_whole_cell_dropped"), d.get("whole_cells"), d.get("hormone_fragments"), d.get("outlines_without_cell_or_hormone_removed"),
           d.get("overlays_repaired"), d.get("openings_done_part_by_part"), d.get("openings_skipped"),
-          ", ".join(f"{k} {v}" for k, v in sorted(by.items())), b.get("status"), (e or {}).get("status", "not exported"), sep="\t")
+          des.get("Islet", ""), des.get("EndocrineCluster", ""), des.get("EndocrineSingle", ""),
+          ", ".join(f"{k} {v}" for k, v in sorted(by.items())), runs[-1].get("status"), (e or {}).get("status", "not exported"), sep="\t")
 EOF
     ;;
 table)
@@ -230,7 +238,8 @@ import json, sys
 from pathlib import Path
 fit, suffix = Path(sys.argv[1]), sys.argv[2]
 cols = ["donor", "objects", "CD99", "INS", "GCG", "SST", "islets", "1 cell", "2-3", "4-10", ">10", "hormone fragments", "cells inside", "neighbours inside", "%",
-        "enclosed non-endocrine inside", "endocrine outside", "%", "confirmed endocrine outside", "%", "of confirmed"]
+        "enclosed non-endocrine inside", "endocrine outside", "%", "confirmed endocrine outside", "%", "of confirmed",
+        "Islet (35 um or more)", "EndocrineCluster", "EndocrineSingle"]
 print(*cols, sep="\t")
 num = lambda v: "not used" if v is None else f"{v:.0f}"
 for item in sys.argv[3:]:
@@ -241,23 +250,26 @@ for item in sys.argv[3:]:
     r = json.loads(report.read_text()); t = r["thresholds"]
     thr = [num(t[k]) for k in ("CD99", "INS", "GCG", "SST")]
     rows = []
+    none = ["", "", ""]
     if check.exists():
         c = json.loads(check.read_text())
+        des = (c.get("designation") or {}).get("by_class") or {}
+        named = [des.get("Islet", ""), des.get("EndocrineCluster", ""), des.get("EndocrineSingle", "")]
         if "islets2" in c:
-            rows.append(("Islets2 (script 1 as it was)", [""] * 4, c["islets2"], ""))
+            rows.append(("Islets2 (script 1 as it was)", [""] * 4, c["islets2"], "", none))
         if "script_1" in c:
-            rows.append(("this image's own classifier, script 1", thr, c["script_1"], ""))
-            rows.append(("... then eroded to the cell outlines (1b)", thr, c["qupath"], c["fragments"]["hormone_fragments"]))
+            rows.append(("this image's own classifier, script 1", thr, c["script_1"], "", none))
+            rows.append(("... then eroded to the cell outlines (1b)", thr, c["qupath"], c["fragments"]["hormone_fragments"], named))
         else:
-            rows.append(("this image's own classifier", thr, c["qupath"], ""))
+            rows.append(("this image's own classifier", thr, c["qupath"], "", named))
     else:
-        rows.append(("this image's own classifier (expected)", thr, r["after_script_1"], ""))
-    for name, th, s, frag in rows:
+        rows.append(("this image's own classifier (expected)", thr, r["after_script_1"], "", none))
+    for name, th, s, frag, named in rows:
         by = s.get("objects_by_cells", {})
         print(donor, name, *th, s["objects_with_cells"], by.get("1", ""), by.get("2-3", ""), by.get("4-10", ""), by.get(">10", ""), frag,
               s["cells_inside"], s["inside_other_at_the_edge"], s["inside_other_at_the_edge_percent"],
               s["inside_other_enclosed"], s["endocrine_outside"], s["endocrine_outside_percent"], s["confirmed_outside"], s["confirmed_outside_percent"],
-              r["cells"]["confirmed"], sep="\t")
+              r["cells"]["confirmed"], *named, sep="\t")
 EOF
     ;;
 *) echo "unknown stage: $STAGE" >&2; exit 2 ;;

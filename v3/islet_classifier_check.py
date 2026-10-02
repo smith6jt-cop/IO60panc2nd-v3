@@ -41,11 +41,12 @@ PX0 = fit.CLASSIFIER_UM / 2.0
 
 
 def read_by_class(path: Path) -> dict:
-    """An islets export split by class: {class name: [geometry, ...]} plus, for Islets, their 'Whole cells'."""
+    """An islets export split by class: {class name: [geometry, ...]}; and its endocrine objects (Islet,
+    EndocrineCluster, EndocrineSingle) in file order with their class, 'Whole cells' and recorded diameter."""
     from shapely.geometry import shape  # noqa: PLC0415
     raw = json.loads(path.read_text())
     feats = raw["features"] if isinstance(raw, dict) else raw
-    out, whole = {}, []
+    out, whole, endocrine = {}, [], []
     for f in feats:
         if not isinstance(f, dict) or not f.get("geometry"):
             continue
@@ -59,9 +60,34 @@ def read_by_class(path: Path) -> dict:
         if g.is_empty:
             continue
         out.setdefault(name, []).append(g)
-        if name == oc.CLASS_ISLET:
-            whole.append((props.get("measurements") or {}).get("Whole cells"))
-    return {"by_class": out, "whole_cells": whole}
+        if name in oc.ENDOCRINE_CLASSES:
+            meas = props.get("measurements") or {}
+            whole.append(meas.get(oc.KEY_CELLS))
+            endocrine.append({"class": name, "geometry": g, "whole": meas.get(oc.KEY_CELLS), "diameter": meas.get(oc.KEY_DIAMETER)})
+    return {"by_class": out, "whole_cells": whole, "endocrine": endocrine}
+
+
+def designation_report(endocrine: list) -> dict:
+    """The classes QuPath gave against the rule applied here to the same outline and the same count of whole cells."""
+    counts = {c: 0 for c in oc.ENDOCRINE_CLASSES}
+    agree = unknown = 0
+    worst = 0.0
+    near = {"30-35 um": 0, "35-40 um": 0}
+    for e in endocrine:
+        counts[e["class"]] += 1
+        if e["whole"] is None:
+            unknown += 1
+            continue
+        across = oc.mean_caliper(e["geometry"]) * PX0
+        agree += oc.designation(float(e["whole"]), across) == e["class"]
+        if e["diameter"] is not None:
+            worst = max(worst, abs(float(e["diameter"]) - across))
+        if float(e["whole"]) >= 2:
+            near["30-35 um"] += 30.0 <= across < 35.0
+            near["35-40 um"] += 35.0 <= across < 40.0
+    return {"by_class": counts, "objects": len(endocrine), "same_class_by_the_rule_here": int(agree), "without_whole_cells": int(unknown),
+            "largest_difference_in_diameter_um": round(worst, 6), "two_or_more_cells_near_the_line": {k: int(v) for k, v in near.items()},
+            "islet_min_diameter_um": oc.ISLET_MIN_DIAMETER_UM}
 
 
 def fragments_report(fragments: list, script1: list | None, x_px, y_px, lab: dict, eligible) -> dict:
@@ -165,7 +191,7 @@ def main() -> int:
     x_px, y_px = x_um / PX0, y_um / PX0
 
     final = read_by_class(args.qupath_objects)
-    islets = final["by_class"].get(oc.CLASS_ISLET, [])
+    islets = [e["geometry"] for e in final["endocrine"]]          # Islet, EndocrineCluster and EndocrineSingle alike
     fragments = final["by_class"].get(oc.CLASS_FRAGMENT, [])
     new, _ = score_geoms(islets, x_px, y_px, lab, eligible)
     # script 1 makes Islets; anything else in that export (Hormone Fragments of an earlier run of 1b, which script 1
@@ -183,6 +209,7 @@ def main() -> int:
         "cells": {"with_nucleus_in_tissue": int(eligible.sum()), "endocrine": int(lab["endocrine"].sum()), "confirmed": int(lab["confirmed"].sum()),
                   "other": int(lab["other"].sum()), "other_enclosed": int(lab["enclosed"].sum()), "left_out": int(lab["left_out"].sum())},
         "qupath": new,
+        "designation": designation_report(final["endocrine"]),
         "fragments": fragments_report(fragments, script1, x_px, y_px, lab, eligible),
         "emulation": {"cells_inside": int(in_emulated.sum()), "cells_in_both": both, "only_qupath": int((in_script1 & ~in_emulated).sum()),
                       "only_emulated": int((in_emulated & ~in_script1).sum()),
