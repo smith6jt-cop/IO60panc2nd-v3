@@ -15,10 +15,7 @@ decides nothing about cells and changes nothing in QuPath.
          islet   only the >= 35 um Islet objects, numbered N
      The size class (step 1b's designation: Islet / EndocrineCluster / EndocrineSingle), the QuPath name and id,
      the count of whole cells and the diameter travel as properties.
-     With --expansion outlines each islet also gets `Islet_<N>_exp20um` (classification IsletExpanded):
-     the 20 um zone outside it, minus every islet, cut where another islet is nearer -- the nearest-
-     islet split the maintainer's 4_islet_expander.groovy made, computed here because no band is
-     drawn in QuPath any more (2026-09-29).
+     Expansion regions are prohibited. Hormone Fragments are exported separately for cell-overlap masking.
 
 2. The revised-export table  ->  <senior>/data/RevisedQuPathExports/<donor>.tsv
      the eleven columns `rebuild_donor_from_revised_export.py` reads, from cells ⋈ context on Object ID:
@@ -29,7 +26,7 @@ decides nothing about cells and changes nothing in QuPath.
      entry's 0.5078 um/px, the manifest carries the qptiff's own 0.5077663810243286).
 
     islet_export_adapter.py --export <results/v3/export> --senior <worktree> --islets all|islet \\
-        --expansion outlines|none [--images <tag> ...]
+        --expansion none [--images <tag> ...]
 """
 from __future__ import annotations
 
@@ -41,15 +38,11 @@ import time
 from pathlib import Path
 
 import shapely
-from shapely import STRtree
-from shapely.geometry import MultiPoint, mapping, shape
-from shapely.ops import unary_union
+from shapely.geometry import mapping, shape
 
 PROJECT = Path("/home/smith6jt/IO60panc2nd/project.qpproj")
 PREFIX = {"Islet": ("Islet", 0), "EndocrineCluster": ("Cluster", 100_000), "EndocrineSingle": ("Single", 200_000)}
 ISLET_CLASSES = {"all": ("Islet", "EndocrineCluster", "EndocrineSingle"), "islet": ("Islet",)}
-EXPANSION_UM = 20.0
-EXPANSION_SUFFIX = "_exp20um"
 DISTANCE = "Signed distance to annotation with {} µm"
 TSV_COLUMNS = ["Object ID", "Image", "Parent", "Classification", "Centroid X µm", "Centroid Y µm",
                "Nucleus: Area µm^2", "Cell: Area µm^2", "Cell: Solidity", "Nucleus/Cell area ratio",
@@ -95,56 +88,7 @@ def select_islets(features: list[dict], rule: str) -> dict[int, dict]:
     return chosen
 
 
-def nearest_islet_bands(cores: dict[int, object], width_px: float, spacing_px: float = 2.0) -> dict[int, object]:
-    """number -> its expansion: within `width_px` of the islet, outside every islet, and nearer to this
-    islet than to any other (a Voronoi partition of points sampled every `spacing_px` along the outlines).
-
-    An islet whose 20 um zone meets no other islet's keeps the plain zone, so the partition is only
-    computed where it changes something.
-    """
-    numbers = list(cores)
-    geoms = [cores[n] for n in numbers]
-    zones = [g.buffer(width_px) for g in geoms]
-    tree = STRtree(zones)
-    left, right = tree.query(zones, predicate="intersects")
-    contested = {int(i) for i, j in zip(left, right) if i != j}
-    all_cores = unary_union(geoms)
-    bands: dict[int, object] = {}
-    cells_of: dict[int, list] = {}
-    if contested:
-        points, owner = [], []
-        for i in sorted(contested):
-            boundary = geoms[i].boundary
-            n = max(8, int(boundary.length / spacing_px))
-            for k in range(n):
-                p = boundary.interpolate(k / n, normalized=True)
-                points.append((p.x, p.y))
-                owner.append(i)
-        # duplicate sample points (two islets sharing a vertex) would make the cells ambiguous
-        seen, keep_pts, keep_owner = set(), [], []
-        for pt, o in zip(points, owner):
-            if pt not in seen:
-                seen.add(pt)
-                keep_pts.append(pt)
-                keep_owner.append(o)
-        hull = unary_union([zones[i] for i in contested]).envelope.buffer(width_px)
-        cells = shapely.voronoi_polygons(MultiPoint(keep_pts), extend_to=hull, ordered=True)
-        for cell, o in zip(cells.geoms, keep_owner):
-            cells_of.setdefault(o, []).append(cell)
-    for i, number in enumerate(numbers):
-        band = zones[i].difference(all_cores)
-        if i in contested:
-            band = band.intersection(unary_union(cells_of[i]))
-        if not band.is_valid:
-            band = shapely.make_valid(band)
-        # keep area only (a cut can leave a stray line)
-        polys = [p for p in (band.geoms if hasattr(band, "geoms") else [band])
-                 if p.geom_type in ("Polygon", "MultiPolygon") and not p.is_empty]
-        bands[number] = unary_union(polys) if polys else None
-    return bands
-
-
-def islet_features(chosen: dict[int, dict], bands: dict[int, object] | None) -> list[dict]:
+def islet_features(chosen: dict[int, dict]) -> list[dict]:
     out = []
     for number in sorted(chosen):
         o = chosen[number]
@@ -156,11 +100,6 @@ def islet_features(chosen: dict[int, dict], bands: dict[int, object] | None) -> 
                                    # step 1b's own measurements (2026-10-02): the whole cells in the object and
                                    # how far across it is; the retired detector's keys are no longer written
                                    "n_cells": m.get("Whole cells"), "mean_diameter_um": m.get("Mean caliper diameter µm")}})
-        band = (bands or {}).get(number)
-        if band is not None and not band.is_empty:
-            out.append({"type": "Feature", "geometry": mapping(band),
-                        "properties": {"objectType": "annotation", "name": f"Islet_{number}{EXPANSION_SUFFIX}",
-                                       "classification": {"name": "IsletExpanded"}}})
     return out
 
 
@@ -230,11 +169,16 @@ def one_image(entry: dict, export: Path, senior: Path, manifest: dict, rule: str
     chosen = select_islets(features, rule)
     if not chosen:
         raise ValueError(f"{name}: no object counts as an islet under --islets {rule}")
-    bands = nearest_islet_bands({n: o["geom"] for n, o in chosen.items()}, EXPANSION_UM / px_qupath) \
-        if expansion == "outlines" else None
+    if expansion != "none":
+        raise ValueError("Expansion regions were removed from all analysis by the maintainer")
     target = export / "typing_islets" / f"Islets__{tag}.geojson"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps({"type": "FeatureCollection", "features": islet_features(chosen, bands)}))
+    target.write_text(json.dumps({"type": "FeatureCollection", "features": islet_features(chosen)}))
+
+    fragments = [f for f in features if class_of(f) == "Hormone Fragment"]
+    fragment_target = export / "typing_fragments" / f"Fragments__{tag}.geojson"
+    fragment_target.parent.mkdir(parents=True, exist_ok=True)
+    fragment_target.write_text(json.dumps({"type": "FeatureCollection", "features": fragments}))
 
     tsv = senior / "data/RevisedQuPathExports" / f"{donor}.tsv"
     tsv.parent.mkdir(parents=True, exist_ok=True)
@@ -245,7 +189,7 @@ def one_image(entry: dict, export: Path, senior: Path, manifest: dict, rule: str
         by_class[o["qupath_class"]] = by_class.get(o["qupath_class"], 0) + 1
     return {"image": name, "donor_id": donor, "islets_rule": rule, "expansion": expansion,
             "islets": len(chosen), "islets_by_qupath_class": by_class,
-            "expansions": sum(1 for b in (bands or {}).values() if b is not None and not b.is_empty),
+            "expansions": 0, "hormone_fragments": len(fragments), "fragment_export": str(fragment_target),
             "pixel_um_qupath": px_qupath, "pixel_um_manifest": px_manifest, "typing_islets": str(target),
             "tsv": str(tsv), **stats, "seconds": round(time.time() - started, 1)}
 
@@ -256,8 +200,8 @@ def main() -> int:
     ap.add_argument("--senior", type=Path, required=True, help="the Senior checkout whose data/ receives the TSVs")
     ap.add_argument("--islets", choices=sorted(ISLET_CLASSES), required=True,
                     help="which QuPath objects count as islets (the maintainer's ruling; no default)")
-    ap.add_argument("--expansion", choices=("outlines", "none"), required=True,
-                    help="write the 20 um nearest-islet outlines, or none (the maintainer's ruling; no default)")
+    ap.add_argument("--expansion", choices=("none",), default="none",
+                    help="expansion regions are prohibited; compatibility flag accepts none only")
     ap.add_argument("--images", nargs="*", default=None, help="image tags; default every image in the Senior manifest")
     ap.add_argument("--summary", type=Path, default=None,
                     help="where to write this run's report (default <export>/typing_islets/adapter_summary.json); several "
